@@ -5,6 +5,9 @@ import requests
 from pydantic import BaseModel, Field
 import json
 import time
+from bs4 import BeautifulSoup
+from googlesearch import search as google_search
+from urllib.parse import urlparse
 
 class KeywordData(BaseModel):
     query: str = Field(description="The search query or keyword")
@@ -101,62 +104,58 @@ class SEOKeywordTool:
             return {}
 
     def analyze_keywords(self, website_url: str, competitor_urls: str) -> List[Dict]:
-        """Generate and analyze keywords using Hugging Face model"""
-        self.logger.info(f"Starting keyword analysis for website: {website_url}")
-        self.logger.info(f"Competitor URLs: {competitor_urls}")
-        keywords = []
-        
+        """Analyze keywords and generate variations"""
         try:
-            # For testing, reduce base topics
+            # Process base topics
             base_topics = [
                 "stress relief activities",
                 "therapy putty exercises",
-                # ... commented out for testing
-                # "sensory toys benefits",
-                # "stress relief tools",
-                # "anxiety relief products",
-                # "educational sensory toys",
-                # "occupational therapy tools",
-                # "fidget toys for anxiety"
+                "sensory toys benefits",
+                "stress relief tools",
+                "anxiety relief products",
+                "educational sensory toys",
+                "occupational therapy tools",
+                "fidget toys for anxiety",
+                "stress balls benefits",
+                "hand therapy exercises",
+                "sensory integration activities",
+                "focus improvement tools",
+                "desk toys for productivity",
+                "mindfulness tools",
+                "therapeutic putty exercises",
+                "hand strengthening activities",
+                "stress management products",
+                "concentration improvement toys",
+                "calming sensory tools",
+                "fine motor skill toys"
             ]
             
-            context = f"""Website: {website_url}
-            Industry: Stress relief and sensory products
-            Competitors: {competitor_urls}"""
+            keywords = []
+            prompt_template = """Analyze this topic: {topic}
+            Context: {context}
             
-            # Modified prompt to get everything in one call
-            prompt_template = """You are a keyword research expert. Your task is to create a JSON object containing keyword analysis.
-
-            Topic to analyze: {topic}
-            Website: {context}
-
-            IMPORTANT: Respond with ONLY a JSON object in this exact format, no other text or explanation:
+            Return a JSON object with:
+            1. Main keyword analysis
+            2. Related keyword variations
+            
+            Format:
             {{
                 "main": {{
-                    "query": "exact topic to analyze",
-                    "intent": "one of: informational/transactional/commercial/navigational",
-                    "tag": "relevant category name",
-                    "volume": "number between 0-10000"
+                    "query": "primary keyword",
+                    "intent": "informational/commercial/transactional",
+                    "tag": "topic category",
+                    "volume": estimated monthly searches,
+                    "frequent_word": "most common relevant word"
                 }},
                 "variations": [
                     {{
-                        "query": "longer variation 1",
+                        "query": "variation 1",
                         "intent": "intent type",
-                        "tag": "category",
-                        "volume": number
+                        "tag": "subtopic tags",
+                        "volume": estimated searches,
+                        "frequent_word": "common word"
                     }},
-                    {{
-                        "query": "longer variation 2",
-                        "intent": "intent type",
-                        "tag": "category",
-                        "volume": number
-                    }},
-                    {{
-                        "query": "longer variation 3",
-                        "intent": "intent type",
-                        "tag": "category",
-                        "volume": number
-                    }}
+                    // ... more variations
                 ]
             }}
 
@@ -165,6 +164,10 @@ class SEOKeywordTool:
             2. Make sure it's valid JSON
             3. No explanations or additional text
             4. Use the exact format shown above"""
+            
+            context = f"""Website: {website_url}
+            Industry: Stress relief and sensory products
+            Competitors: {competitor_urls}"""
             
             self.logger.info(f"Processing {len(base_topics)} base topics")
             
@@ -221,3 +224,80 @@ class SEOKeywordTool:
         except Exception as e:
             self.logger.error(f"Error in keyword analysis: {str(e)}")
             return []
+
+    def search_urls(self, query: str, num_results: int = 3) -> List[str]:
+        """Search for relevant URLs using Google Search"""
+        try:
+            self.logger.info(f"Searching URLs for query: {query}")
+            
+            # List of trusted domains
+            trusted_domains = [
+                'mayoclinic.org',
+                'healthline.com',
+                'medicalnewstoday.com',
+                'verywellmind.com',
+                'psychologytoday.com',
+                'health.harvard.edu',
+                'nih.gov',
+                'webmd.com',
+                'sciencedaily.com',
+                'betterhealth.vic.gov.au',
+                'helpguide.org'
+            ]
+            
+            found_urls = []
+            # Use googlesearch-python to find URLs
+            search_results = google_search(
+                query, 
+                num_results=num_results * 3,  # Get extra results to filter
+                lang="en"
+            )
+            
+            for url in search_results:
+                # Parse the domain
+                domain = urlparse(url).netloc.lower()
+                if any(trusted in domain for trusted in trusted_domains):
+                    try:
+                        # Verify the URL is accessible
+                        response = requests.head(url, timeout=5, allow_redirects=True)
+                        if response.status_code == 200:
+                            found_urls.append(url)
+                            self.logger.info(f"Found valid URL: {url}")
+                            if len(found_urls) >= num_results:
+                                break
+                    except:
+                        continue
+                        
+                time.sleep(0.5)  # Be nice to search engines
+            
+            self.logger.info(f"Found {len(found_urls)} valid URLs")
+            return found_urls
+            
+        except Exception as e:
+            self.logger.error(f"Error searching URLs: {str(e)}")
+            return []
+
+    def get_page_title(self, url: str) -> str:
+        """Get the title of a webpage with better error handling"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            return soup.title.string.strip() if soup.title else ""
+        except:
+            return ""
+
+    def get_meta_description(self, url: str) -> str:
+        """Get the meta description with better error handling"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=5)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            meta = soup.find('meta', attrs={'name': 'description'}) or soup.find('meta', attrs={'property': 'og:description'})
+            return meta['content'].strip() if meta and 'content' in meta.attrs else ""
+        except:
+            return ""

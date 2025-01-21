@@ -14,7 +14,7 @@ class BlogAutomationApp:
     def __init__(self):
         # Force test mode to True
         os.environ['ENV'] = 'development'
-        self.test_mode = True
+        self.test_mode = False
         self.image_handler = ImageHandler(test_mode=self.test_mode)
         self.shopify_uploader = ShopifyUploader()
         # Set default values
@@ -22,17 +22,26 @@ class BlogAutomationApp:
         self.default_competitors = "https://crazyaarons.com/"
 
     def process_lowfruits_file(self, uploaded_file) -> List[Dict]:
-        """Process a single lowfruits.io Excel file."""
+        """Process a single lowfruits.io Excel or CSV file."""
         try:
-            df = pd.read_excel(uploaded_file)
+            # Determine file type and read accordingly
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            else:  # xlsx
+                df = pd.read_excel(uploaded_file)
+            
+            # Convert column names to lowercase
+            df.columns = df.columns.str.lower()
+            
             # Extract relevant columns
             keywords_data = []
             for _, row in df.iterrows():
                 keyword_info = {
-                    'query': row['Query'],
-                    'tab': row['Tab'],
-                    'intent': row['Intent'] if 'Intent' in row else None,
-                    'volume': row['Volume'] if 'Volume' in row else 0
+                    'query': row['query'],
+                    'tab': row['tab'],
+                    'intent': row['intent'] if 'intent' in df.columns else None,
+                    'volume': row['volume'] if 'volume' in df.columns else 0,
+                    'frequent_word': row['frequent word'] if 'frequent word' in df.columns else ''
                 }
                 keywords_data.append(keyword_info)
             return keywords_data
@@ -43,41 +52,46 @@ class BlogAutomationApp:
     def create_interface(self):
         st.title("Shopify Blog Post Automation Tool")
 
-        # Input fields
-        persona = st.selectbox("Select Writing Persona", list(PERSONAS.keys()), index=0)
-
-        # Initialize keywords in session state if not exists
+        # Initialize session state variables
+        if 'keywords_df' not in st.session_state:
+            st.session_state.keywords_df = pd.DataFrame()
         if 'all_keywords' not in st.session_state:
             st.session_state.all_keywords = []
+        if 'generated_posts' not in st.session_state:
+            st.session_state.generated_posts = []
+
+        # Input fields
+        persona = st.selectbox("Select Writing Persona", list(PERSONAS.keys()), index=0)
+        
+        # Initialize content generator once
+        self.content_generator = ContentGenerator(persona, test_mode=self.test_mode)
 
         # Create tabs for different keyword sources
         keyword_tab1, keyword_tab2 = st.tabs(["Lowfruits Upload", "SERP Analysis"])
 
         with keyword_tab1:
             # File Upload Section
-            st.subheader("Keyword Files Upload")
-            st.markdown("""
-            Upload your lowfruits.io Excel files containing keyword data.
-            Files should include columns: Query, Tab, Intent, and Frequent Word.
-            """)
-            
             uploaded_files = st.file_uploader(
-                "Upload Lowfruits.io Excel Files",
-                type=['xlsx'],
+                "Upload Lowfruits.io Excel or CSV Files",
+                type=['xlsx', 'csv'],
                 accept_multiple_files=True
             )
 
             if uploaded_files:
                 st.write(f"Uploaded {len(uploaded_files)} files")
                 
-                # Process button for lowfruits files
                 if st.button("Process Lowfruits Files"):
-                    # Process each file
                     with st.spinner("Processing keyword files..."):
+                        temp_df = pd.DataFrame()
                         for file in uploaded_files:
                             st.write(f"Processing {file.name}...")
                             keywords = self.process_lowfruits_file(file)
-                            st.session_state.all_keywords.extend(keywords)
+                            temp_df = pd.concat([temp_df, pd.DataFrame(keywords)])
+                        
+                        # Add selection column and update session state
+                        temp_df.insert(0, 'Selected', False)
+                        st.session_state.keywords_df = temp_df
+                        st.rerun()  # Rerun to show the updated dataframe
 
         with keyword_tab2:
             # SERP Analysis Section
@@ -116,132 +130,201 @@ class BlogAutomationApp:
                                 return
                             
                             # Convert SERP keywords to match lowfruits format
-                            with progress_container:
-                                progress_bar = st.progress(0)
-                                for i, kw in enumerate(serp_keywords):
-                                    keyword_info = {
-                                        'query': kw['query'],
-                                        'tab': 'SERP',
-                                        'intent': kw['intent'],
-                                        'volume': kw.get('volume', 0)
-                                    }
-                                    st.session_state.all_keywords.append(keyword_info)
-                                    progress_bar.progress((i + 1) / len(serp_keywords))
+                            temp_df = pd.DataFrame([{
+                                'query': kw['query'],
+                                'intent': kw.get('intent', ''),
+                                'volume': kw.get('volume', 0),
+                                'frequent_word': kw.get('frequent_word', ''),
+                                'tab': kw.get('tag', 'SERP')
+                            } for kw in serp_keywords])
+
+                            # Add selection column and update session state
+                            temp_df.insert(0, 'Selected', False)
+                            st.session_state.keywords_df = pd.concat([
+                                st.session_state.keywords_df, 
+                                temp_df
+                            ]).drop_duplicates(subset=['query'])
                             
-                            status_container.success(f"✅ Found {len(serp_keywords)} keywords")
-                            
+                            st.success(f"Found {len(serp_keywords)} keywords!")
+                            st.rerun()
+
                         except Exception as e:
-                            st.error("Error during analysis. Please check your inputs and try again.")
-                            st.error(f"Details: {str(e)}")
-                            
+                            st.error(f"Error in SERP analysis: {str(e)}")
+                            st.error("Full error:", exc_info=True)
+
                 except Exception as e:
-                    st.error(f"Configuration error: {str(e)}")
+                    st.error(f"Error: {str(e)}")
 
-            # Add a small info section
-            with st.expander("About SERP Analysis"):
-                st.markdown("""
-                This tool uses AI to:
-                - Generate relevant keyword variations
-                - Determine search intent
-                - Estimate search volumes
-                - Categorize keywords by topic
-                
-                Rate limited to prevent API overuse.
-                """)
-
-        # Show combined keywords section
-        if st.session_state.all_keywords:
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.subheader("All Processed Keywords")
-            with col2:
-                if st.button("Clear All Keywords", type="secondary"):
-                    st.session_state.all_keywords = []
-                    st.rerun()
+        # Show selection buttons and dataframe if we have keywords (moved outside tabs)
+        if not st.session_state.keywords_df.empty:
+            st.markdown("---")  # Add separator
+            st.subheader("Keywords for Processing")
             
-            df = pd.DataFrame(st.session_state.all_keywords)
-            st.dataframe(
-                df[['query', 'intent', 'volume', 'tab']],
+            # Create a container for the buttons
+            button_container = st.container()
+            col1, col2, col3 = button_container.columns([1, 1, 2])
+            
+            with col1:
+                if st.button("✅ Select All", type="primary", use_container_width=True):
+                    st.session_state.keywords_df['Selected'] = True
+                    st.rerun()
+                    
+            with col2:
+                if st.button("❌ Clear All", type="secondary", use_container_width=True):
+                    st.session_state.keywords_df['Selected'] = False
+                    st.rerun()
+
+            with col3:
+                if st.button("🚀 Generate Posts for Selected Keywords", type="primary", use_container_width=True):
+                    selected_keywords = st.session_state.keywords_df[st.session_state.keywords_df['Selected']]
+                    if len(selected_keywords) == 0:
+                        st.warning("⚠️ Please select at least one keyword")
+                    else:
+                        st.write(f"🎯 Generating posts for {len(selected_keywords)} keywords")
+                        
+                        # Create progress containers
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        posts_container = st.container()
+
+                        for index, row in selected_keywords.iterrows():
+                            try:
+                                status_text.text(f"🔄 Processing: {row['query']}")
+                                
+                                # Generate post using content_generator
+                                post = self.content_generator.generate_post(row['query'], dict(row))
+                                
+                                if post:
+                                    # Try to generate image
+                                    try:
+                                        image_prompt = self.image_handler.generate_image_prompt(
+                                            query=post['keyword'],
+                                            intent=row.get('intent', ''),
+                                            excerpt=post.get('excerpt', '')
+                                        )
+                                        post['image'] = self.image_handler.fetch_image(image_prompt)
+                                    except Exception as img_error:
+                                        st.error(f"🖼️ Error generating image: {str(img_error)}")
+                                        post['image'] = None
+
+                                    # Add to session state
+                                    st.session_state.generated_posts.append(post)
+                                    
+                                    # Show post in UI with improved layout
+                                    with posts_container:
+                                        post_col1, post_col2 = st.columns([4, 1])
+                                        with post_col1:
+                                            st.success(f"✅ Generated: {post['title']}")
+                                            with st.expander("Preview"):
+                                                st.write(post['excerpt'])
+                                        with post_col2:
+                                            if st.button("📤 Upload Now", key=f"upload_{len(st.session_state.generated_posts)}", type="primary"):
+                                                with st.spinner("📡 Uploading to Shopify..."):
+                                                    result = asyncio.run(self.shopify_uploader.upload_post(post))
+                                                    st.success(f"✨ {result}")
+
+                                else:
+                                    st.error(f"❌ Failed to generate post for: {row['query']}")
+
+                            except Exception as e:
+                                st.error(f"⚠️ Error processing {row['query']}: {str(e)}")
+
+                            # Update progress
+                            progress = (index + 1) / len(selected_keywords)
+                            progress_bar.progress(progress)
+                            status_text.text(f"📊 Processed {index + 1} of {len(selected_keywords)} keywords")
+
+                        status_text.text("🎉 Processing complete!")
+
+            # Initialize the editor key in session state if it doesn't exist
+            if 'editor_key' not in st.session_state:
+                st.session_state.editor_key = 0
+
+            # Show editable dataframe with data_editor instead of dataframe
+            edited_df = st.data_editor(
+                st.session_state.keywords_df,
+                hide_index=True,
                 use_container_width=True,
                 column_config={
-                    'query': 'Keyword',
-                    'intent': 'Intent',
-                    'volume': st.column_config.NumberColumn('Volume', format="%d"),
-                    'tab': 'Source'
+                    "Selected": st.column_config.CheckboxColumn(
+                        "Select",
+                        help="Select keywords to process",
+                        default=False,
+                    )
                 },
-                hide_index=True
+                disabled=["query", "tab", "intent", "volume", "frequent_word"],  # Make all columns except Selected read-only
+                key=f"keyword_editor_{st.session_state.editor_key}"  # Dynamic key based on state
             )
 
-        # Generate Posts Section
-        if 'all_keywords' in st.session_state and st.session_state.all_keywords:
-            st.subheader("Generate Blog Posts")
-            
-            # Show total keywords to be processed
-            st.write(f"Total keywords to process: {len(st.session_state.all_keywords)}")
-            
-            if st.button("Generate Blog Posts"):
-                keywords_df = pd.DataFrame(st.session_state.all_keywords)
-                generated_posts = []
-                
-                with st.spinner("Generating blog posts..."):
-                    total = len(keywords_df)
-                    progress_bar = st.progress(0)
-                    
-                    for index, row in keywords_df.iterrows():
-                        keyword_data = row.to_dict()  # Convert Series to dict
-                        posts = self.generate_posts(
-                            persona=persona,
-                            keyword=keyword_data['query'],  # Use the query from the dict
-                            num_posts=1,
-                            keyword_data=keyword_data
-                        )
-                        generated_posts.extend(posts)
-                        
-                        # Update progress
-                        progress = (index + 1) / total
-                        progress_bar.progress(progress)
-                        st.write(f"Processed {index + 1} of {total} keywords")
-                
-                st.session_state.generated_posts_df = self.create_posts_dataframe(generated_posts)
+            # Only update if the dataframe has actually changed
+            if not edited_df.equals(st.session_state.keywords_df):
+                st.session_state.keywords_df = edited_df.copy()
+                st.session_state.editor_key += 1  # Increment the key to force a refresh
+                st.rerun()
 
-        # Show generated posts if available
-        if 'generated_posts_df' in st.session_state:
-            edited_df = st.data_editor(
-                st.session_state.generated_posts_df,
-                num_rows="dynamic",
+        # Show all generated posts
+        if st.session_state.generated_posts:
+            st.header("Generated Posts")
+            posts_df = self.create_posts_dataframe(st.session_state.generated_posts)
+            edited_posts_df = st.data_editor(
+                posts_df,
+                hide_index=True,
                 use_container_width=True
             )
-            st.session_state.generated_posts_df = edited_df
 
-        # Upload button for selected posts
-        if st.button("Upload Selected Posts"):
-            selected_posts = self.get_selected_posts(st.session_state.generated_posts_df)
-            upload_status = asyncio.run(self.upload_posts(selected_posts))
-            st.write(upload_status)
+            # Bulk upload button for remaining posts
+            if st.button("Upload All Remaining Posts"):
+                selected_posts = self.get_selected_posts(edited_posts_df)
+                with st.spinner("Uploading selected posts..."):
+                    upload_status = asyncio.run(self.upload_posts(selected_posts))
+                    st.write(upload_status)
 
     def generate_posts(self, persona: str, keyword: str, num_posts: int, keyword_data: Dict = None):
         """Generate blog posts with additional keyword data"""
         try:
+            st.write(f"Starting generation for keyword: {keyword}")
             content_generator = ContentGenerator(persona, test_mode=self.test_mode)
             
             # Convert pandas Series to dictionary if needed
             if hasattr(keyword_data, 'to_dict'):
                 keyword_data = keyword_data.to_dict()
+                st.write(f"Keyword data: {keyword_data}")
             
-            # Pass the keyword data to the content generator
-            generated_posts = content_generator.generate_multiple_posts(
-                [keyword] * num_posts,
-                keyword_data=[keyword_data] * num_posts if keyword_data else None
-            )
+            st.write("Generating content...")
+            generated_posts = []
+            for _ in range(num_posts):
+                post = content_generator.generate_post(keyword, keyword_data)
+                if post:  # Only add if post generation was successful
+                    # Add images to post
+                    try:
+                        image_prompt = self.image_handler.generate_image_prompt(
+                            query=post['keyword'],
+                            intent=keyword_data.get('intent', ''),
+                            excerpt=post.get('excerpt', '')
+                        )
+                        st.write(f"Generated image prompt: {image_prompt}")
+                        
+                        post['image'] = self.image_handler.fetch_image(image_prompt)
+                        st.write("✅ Image fetched successfully")
+                    except Exception as img_error:
+                        st.error(f"Error fetching image: {str(img_error)}")
+                        post['image'] = None
+                    
+                    generated_posts.append(post)
+                    st.write(f"✅ Generated post {len(generated_posts)}")
+                else:
+                    st.warning("⚠️ Failed to generate post")
 
-            # Add images to posts
-            for post in generated_posts:
-                image_query = f"{post['title']} {post['keyword']}"
-                post['image'] = self.image_handler.fetch_image(image_query)
-
-            return generated_posts
+            if generated_posts:
+                st.write("Post generation complete")
+                return generated_posts
+            else:
+                st.error("No posts were generated successfully")
+                return []
+            
         except Exception as e:
-            st.error(f"Error generating posts: {str(e)}")
+            st.error(f"Error in generate_posts: {str(e)}")
+            st.error("Full error:", exc_info=True)
             return []
 
     def create_posts_dataframe(self, generated_posts):
@@ -254,7 +337,11 @@ class BlogAutomationApp:
                 "Title": post["title"],
                 "Excerpt": post["excerpt"],
                 "Content": post["content"],
-                "Image": post["image"]
+                "Image": post["image"],
+                "Intent": post.get("intent", ""),
+                "Volume": post.get("volume", 0),
+                "Frequent Word": post.get("frequent_word", ""),
+                "Tab": post.get("tab", "")
             })
         return pd.DataFrame(posts_data)
 

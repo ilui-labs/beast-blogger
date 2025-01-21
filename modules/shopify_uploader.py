@@ -3,6 +3,9 @@ from config.config import SHOPIFY_ACCESS_TOKEN, SHOPIFY_STORE_URL, SHOPIFY_API_V
 from datetime import datetime
 import traceback
 import json
+from typing import Dict
+import os
+import base64
 
 class ShopifyUploader:
     def __init__(self):
@@ -16,6 +19,52 @@ class ShopifyUploader:
         try:
             title = post['title']
             excerpt = post['excerpt']
+            image_url = post.get('image', '')
+
+            # Handle local file paths
+            if image_url.startswith('file://'):
+                try:
+                    # Convert file URL to actual file path
+                    file_path = image_url[7:]  # Remove 'file://' prefix
+                    print(f"Uploading image from path: {file_path}")
+                    
+                    # Create new article with image
+                    article = shopify.Article({
+                        'blog_id': 85728755847,
+                        'title': title,
+                        'author': "Jackson Blacklock",
+                        'body_html': post['content'],
+                        'summary': excerpt,
+                        'published': False,
+                        'image': {
+                            'attachment': base64.b64encode(open(file_path, 'rb').read()).decode()
+                        }
+                    })
+                    
+                    if article.save():
+                        print(f"Article and image uploaded successfully")
+                        return article
+                    else:
+                        print(f"Error saving article: {article.errors.full_messages()}")
+                        return None
+                        
+                except Exception as img_error:
+                    print(f"Error uploading article with image: {str(img_error)}")
+                    return None
+
+            # If no image or error occurred, try without image
+            variables = {
+                "article": {
+                    "blogId": "gid://shopify/Blog/85728755847",
+                    "title": title,
+                    "author": {
+                        "name": "Jackson Blacklock"
+                    },
+                    "body": post['content'],
+                    "summary": excerpt,
+                    "isPublished": False
+                }
+            }
             
             mutation = """
                 mutation CreateArticle($article: ArticleCreateInput!) {
@@ -40,23 +89,6 @@ class ShopifyUploader:
                     }
                 }
             """
-            
-            variables = {
-                "article": {
-                    "blogId": "gid://shopify/Blog/85728755847",
-                    "title": title,
-                    "author": {
-                        "name": "Jackson Blacklock"
-                    },
-                    "body": post['content'],
-                    "summary": excerpt,
-                    "isPublished": False,
-                    "image": {
-                        "altText": post['keyword'],
-                        "url": post['image']
-                    }
-                }
-            }
             
             response = shopify.GraphQL().execute(mutation, variables)
             response = json.loads(response)
