@@ -14,7 +14,7 @@ class BlogAutomationApp:
     def __init__(self):
         # Force test mode to True
         os.environ['ENV'] = 'development'
-        self.test_mode = False
+        self.test_mode = True
         self.image_handler = ImageHandler(test_mode=self.test_mode)
         self.shopify_uploader = ShopifyUploader()
         # Set default values
@@ -32,7 +32,6 @@ class BlogAutomationApp:
                     'query': row['Query'],
                     'tab': row['Tab'],
                     'intent': row['Intent'] if 'Intent' in row else None,
-                    'frequent_word': row['Frequent Word'] if 'Frequent Word' in row else None,
                     'volume': row['Volume'] if 'Volume' in row else 0
                 }
                 keywords_data.append(keyword_info)
@@ -47,49 +46,131 @@ class BlogAutomationApp:
         # Input fields
         persona = st.selectbox("Select Writing Persona", list(PERSONAS.keys()), index=0)
 
-        # File Upload Section
-        st.subheader("Keyword Files Upload")
-        st.markdown("""
-        Upload your lowfruits.io Excel files containing keyword data.
-        Files should include columns: Query, Tab, Intent, and Frequent Word.
-        """)
-        
-        uploaded_files = st.file_uploader(
-            "Upload Lowfruits.io Excel Files",
-            type=['xlsx'],
-            accept_multiple_files=True
-        )
+        # Initialize keywords in session state if not exists
+        if 'all_keywords' not in st.session_state:
+            st.session_state.all_keywords = []
 
-        if uploaded_files:
-            st.write(f"Uploaded {len(uploaded_files)} files")
+        # Create tabs for different keyword sources
+        keyword_tab1, keyword_tab2 = st.tabs(["Lowfruits Upload", "SERP Analysis"])
+
+        with keyword_tab1:
+            # File Upload Section
+            st.subheader("Keyword Files Upload")
+            st.markdown("""
+            Upload your lowfruits.io Excel files containing keyword data.
+            Files should include columns: Query, Tab, Intent, and Frequent Word.
+            """)
             
-            # Initialize keywords in session state if not exists
-            if 'all_keywords' not in st.session_state:
-                st.session_state.all_keywords = []
-            
-            # Process button
-            if st.button("Process Keyword Files"):
-                # Process each file
-                with st.spinner("Processing keyword files..."):
-                    for file in uploaded_files:
-                        st.write(f"Processing {file.name}...")
-                        keywords = self.process_lowfruits_file(file)
-                        # Extend existing keywords with new ones
-                        st.session_state.all_keywords.extend(keywords)
+            uploaded_files = st.file_uploader(
+                "Upload Lowfruits.io Excel Files",
+                type=['xlsx'],
+                accept_multiple_files=True
+            )
+
+            if uploaded_files:
+                st.write(f"Uploaded {len(uploaded_files)} files")
                 
-                # Show all processed keywords
-                if st.session_state.all_keywords:
-                    df = pd.DataFrame(st.session_state.all_keywords)
-                    st.write(f"Processed Keywords (Total: {len(st.session_state.all_keywords)})")
-                    st.dataframe(
-                        df[['query', 'intent', 'frequent_word', 'volume']],
-                        use_container_width=True
-                    )
+                # Process button for lowfruits files
+                if st.button("Process Lowfruits Files"):
+                    # Process each file
+                    with st.spinner("Processing keyword files..."):
+                        for file in uploaded_files:
+                            st.write(f"Processing {file.name}...")
+                            keywords = self.process_lowfruits_file(file)
+                            st.session_state.all_keywords.extend(keywords)
 
-            # Add clear button to reset keywords
-            if st.button("Clear All Keywords"):
-                st.session_state.all_keywords = []
-                st.rerun()
+        with keyword_tab2:
+            # SERP Analysis Section
+            st.subheader("SERP Keyword Analysis")
+            website_url = st.text_input(
+                "Your Website URL",
+                value=self.default_website if self.test_mode else "",
+                placeholder="https://example.com"
+            )
+            competitor_urls = st.text_area(
+                "Competitor URLs (one per line)",
+                value=self.default_competitors if self.test_mode else "",
+                placeholder="https://competitor1.com\nhttps://competitor2.com"
+            )
+
+            if st.button("Run SERP Analysis"):
+                try:
+                    if not os.getenv('HUGGINGFACE_API_KEY'):
+                        st.error("Hugging Face API key not found. Please add HUGGINGFACE_API_KEY to your environment variables.")
+                        return
+
+                    with st.spinner("Analyzing keywords..."):
+                        # Create status containers
+                        status_container = st.empty()
+                        progress_container = st.empty()
+                        
+                        try:
+                            seo_tool = SEOKeywordTool()
+                            
+                            # Show progress
+                            status_container.info("Analyzing keywords and generating variations...")
+                            serp_keywords = seo_tool.analyze_keywords(website_url, competitor_urls)
+                            
+                            if not serp_keywords:
+                                st.warning("No keywords found. Try adjusting your search parameters.")
+                                return
+                            
+                            # Convert SERP keywords to match lowfruits format
+                            with progress_container:
+                                progress_bar = st.progress(0)
+                                for i, kw in enumerate(serp_keywords):
+                                    keyword_info = {
+                                        'query': kw['query'],
+                                        'tab': 'SERP',
+                                        'intent': kw['intent'],
+                                        'volume': kw.get('volume', 0)
+                                    }
+                                    st.session_state.all_keywords.append(keyword_info)
+                                    progress_bar.progress((i + 1) / len(serp_keywords))
+                            
+                            status_container.success(f"✅ Found {len(serp_keywords)} keywords")
+                            
+                        except Exception as e:
+                            st.error("Error during analysis. Please check your inputs and try again.")
+                            st.error(f"Details: {str(e)}")
+                            
+                except Exception as e:
+                    st.error(f"Configuration error: {str(e)}")
+
+            # Add a small info section
+            with st.expander("About SERP Analysis"):
+                st.markdown("""
+                This tool uses AI to:
+                - Generate relevant keyword variations
+                - Determine search intent
+                - Estimate search volumes
+                - Categorize keywords by topic
+                
+                Rate limited to prevent API overuse.
+                """)
+
+        # Show combined keywords section
+        if st.session_state.all_keywords:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.subheader("All Processed Keywords")
+            with col2:
+                if st.button("Clear All Keywords", type="secondary"):
+                    st.session_state.all_keywords = []
+                    st.rerun()
+            
+            df = pd.DataFrame(st.session_state.all_keywords)
+            st.dataframe(
+                df[['query', 'intent', 'volume', 'tab']],
+                use_container_width=True,
+                column_config={
+                    'query': 'Keyword',
+                    'intent': 'Intent',
+                    'volume': st.column_config.NumberColumn('Volume', format="%d"),
+                    'tab': 'Source'
+                },
+                hide_index=True
+            )
 
         # Generate Posts Section
         if 'all_keywords' in st.session_state and st.session_state.all_keywords:

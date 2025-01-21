@@ -1,236 +1,223 @@
-import requests
-from typing import List, Dict
-import json
-from urllib.parse import quote, urlparse, urljoin
-import time
-from bs4 import BeautifulSoup
+import os
 import logging
+from typing import List, Dict
+import requests
+from pydantic import BaseModel, Field
+import json
+import time
+
+class KeywordData(BaseModel):
+    query: str = Field(description="The search query or keyword")
+    intent: str = Field(description="Search intent: informational, transactional, commercial, or navigational")
+    tag: str = Field(description="Category or topic tag for the keyword")
+    volume: int = Field(description="Estimated monthly search volume (0 if unknown)")
 
 class SEOKeywordTool:
     def __init__(self):
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        # Set up logging
-        logging.basicConfig(level=logging.INFO)
+        # Switch to a different model that's better at following instructions
+        self.api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+        self.headers = {"Authorization": f"Bearer {os.getenv('HUGGINGFACE_API_KEY')}"}
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
         self.logger = logging.getLogger(__name__)
 
-    def get_main_pages(self, base_url: str) -> List[str]:
-        """Get URLs of main pages (home, about, products)."""
-        main_paths = ['', 'about', 'about-us', 'products', 'shop']
-        urls = []
-        for path in main_paths:
-            urls.append(urljoin(base_url.strip(), path))
-        return urls
-
-    def extract_terms_from_website(self, url: str) -> List[Dict]:
-        """Extract product terms and related topics from website with frequency."""
-        self.logger.info(f"Analyzing page: {url}")
+    def generate_text(self, prompt: str) -> str:
+        """Generate text using Hugging Face API"""
         try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            self.logger.info("Making API request to Hugging Face...")
+            payload = {
+                "inputs": f"<s>[INST] {prompt} [/INST]",  # Mistral instruction format
+                "parameters": {
+                    "max_length": 1000,
+                    "temperature": 0.1,
+                    "return_full_text": False,
+                    "top_p": 0.1  # More focused output
+                }
+            }
+            response = requests.post(self.api_url, headers=self.headers, json=payload)
             
-            # Get text from important elements with weights
-            texts = []
-            texts.extend([h.text.lower() for h in soup.find_all('h1')] * 3)  # Weight headings more
-            texts.extend([h.text.lower() for h in soup.find_all('h2')] * 2)
-            texts.extend([h.text.lower() for h in soup.find_all('h3')])
-            texts.extend([p.text.lower() for p in soup.find_all('p')])
+            if response.status_code != 200:
+                self.logger.error(f"API Error: {response.status_code}")
+                return ""
+                
+            self.logger.info("Received response from API")
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                generated_text = result[0].get('generated_text', '')
+                self.logger.info(f"Generated text: {generated_text[:100]}...")
+                return generated_text
             
-            # Extract product names and categories
-            all_text = ' '.join(texts)
-            words = all_text.split()
+            self.logger.warning("Empty or invalid response from API")
+            return ""
             
-            # Find 2-4 word phrases (focusing on longer phrases)
-            phrases = {}
-            for i in range(len(words)-1):
-                if i < len(words) - 3:
-                    phrase = f"{words[i]} {words[i+1]} {words[i+2]} {words[i+3]}"
-                    phrases[phrase] = phrases.get(phrase, 0) + 1
-                if i < len(words) - 2:
-                    phrase = f"{words[i]} {words[i+1]} {words[i+2]}"
-                    phrases[phrase] = phrases.get(phrase, 0) + 1
-                phrase = f"{words[i]} {words[i+1]}"
-                phrases[phrase] = phrases.get(phrase, 0) + 1
-            
-            # Filter relevant phrases
-            relevant_phrases = []
-            relevant_keywords = [
-                'putty', 'therapy', 'sensory', 'stress relief',
-                'anxiety relief', 'fidget', 'educational', 'occupational therapy'
-            ]
-            
-            for phrase, frequency in phrases.items():
-                if any(keyword in phrase for keyword in relevant_keywords):
-                    relevant_phrases.append({
-                        'phrase': phrase,
-                        'frequency': frequency,
-                        'word_count': len(phrase.split())
-                    })
-            
-            # Sort by frequency and word count
-            sorted_phrases = sorted(
-                relevant_phrases,
-                key=lambda x: (x['frequency'], x['word_count']),
-                reverse=True
-            )
-            
-            # Take top 10 most frequent phrases
-            top_phrases = sorted_phrases[:10]
-            self.logger.info(f"Found {len(top_phrases)} relevant phrases from {url}")
-            return top_phrases
         except Exception as e:
-            self.logger.error(f"Error extracting terms from {url}: {e}")
-            return []
+            self.logger.error(f"Generation error: {str(e)}")
+            return ""
 
-    def get_google_suggestions(self, query: str) -> List[str]:
-        """Get Google Autocomplete suggestions."""
-        self.logger.debug(f"Getting suggestions for: {query}")
-        base_url = f"http://suggestqueries.google.com/complete/search?client=firefox&q={quote(query)}"
+    def clean_and_parse_json(self, response: str) -> dict:
+        """Clean and parse JSON response, handling duplicates"""
         try:
-            response = requests.get(base_url, headers=self.headers)
-            if response.status_code == 200:
-                suggestions = json.loads(response.text)[1]
-                return suggestions
-            return []
+            self.logger.info("\n=== Starting JSON Cleaning ===")
+            
+            # Find the first complete JSON object
+            depth = 0
+            start = response.find('{')
+            
+            if start == -1:
+                self.logger.error("No JSON object found")
+                return {}
+                
+            for i in range(start, len(response)):
+                if response[i] == '{':
+                    depth += 1
+                elif response[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = response[start:i+1]
+                        self.logger.info("\nExtracted first complete JSON object:")
+                        self.logger.info(json_str)
+                        
+                        try:
+                            data_package = json.loads(json_str)
+                            if 'main' in data_package and 'variations' in data_package:
+                                self.logger.info("Successfully parsed JSON")
+                                return data_package
+                            else:
+                                self.logger.warning("JSON missing required structure")
+                        except json.JSONDecodeError as e:
+                            self.logger.error(f"JSON parse error: {str(e)}")
+                        break
+            
+            self.logger.error("No valid JSON object found")
+            return {}
+            
         except Exception as e:
-            self.logger.error(f"Error getting Google suggestions: {e}")
-            return []
-
-    def get_related_topics(self, term: str) -> List[str]:
-        """Get broader related topics for content ideas."""
-        related_topics = []
-        broader_contexts = [
-            f"activities with {term}",
-            f"benefits of {term}",
-            f"{term} alternatives",
-            f"{term} for education",
-            f"{term} for therapy",
-            f"{term} games",
-            f"{term} exercises",
-            "sensory activities",
-            "stress relief techniques",
-            "occupational therapy tools",
-            "educational toys",
-            "fidget toys benefits",
-            "anxiety relief methods"
-        ]
-        
-        for context in broader_contexts:
-            suggestions = self.get_google_suggestions(context)
-            related_topics.extend(suggestions)
-            time.sleep(0.2)
-        
-        return list(set(related_topics))
+            self.logger.error(f"JSON parsing error: {str(e)}")
+            return {}
 
     def analyze_keywords(self, website_url: str, competitor_urls: str) -> List[Dict]:
-        """Find relevant long-tail keywords and broader content ideas."""
-        self.logger.info("Starting keyword analysis...")
+        """Generate and analyze keywords using Hugging Face model"""
+        self.logger.info(f"Starting keyword analysis for website: {website_url}")
+        self.logger.info(f"Competitor URLs: {competitor_urls}")
         keywords = []
         
-        # Extract terms from main website pages
-        self.logger.info("Analyzing main website...")
-        product_terms = []
-        for url in self.get_main_pages(website_url):
-            terms = self.extract_terms_from_website(url)
-            product_terms.extend(terms)
-        
-        # Add competitor terms
-        self.logger.info("Analyzing competitor websites...")
-        for url in competitor_urls.split('\n'):
-            if url.strip():
-                for page_url in self.get_main_pages(url):
-                    terms = self.extract_terms_from_website(page_url)
-                    product_terms.extend(terms)
-        
-        # Sort by frequency and get unique terms
-        product_terms.sort(key=lambda x: (x['frequency'], x['word_count']), reverse=True)
-        unique_terms = []
-        seen = set()
-        for term in product_terms:
-            if term['phrase'] not in seen:
-                unique_terms.append(term)
-                seen.add(term['phrase'])
-        
-        self.logger.info(f"Found {len(unique_terms)} unique product terms")
-        
-        # Use only top 20 most frequent terms
-        top_terms = unique_terms[:20]
-        
-        # Generate keywords for product terms
-        self.logger.info("Generating keyword variations...")
-        total_terms = len(top_terms)
-        for i, term_data in enumerate(top_terms, 1):
-            term = term_data['phrase']
-            self.logger.info(f"Processing term {i}/{total_terms}: {term} (frequency: {term_data['frequency']})")
-            suggestions = self.get_google_suggestions(term)
-            
-            # Get suggestions for informational and commercial intents
-            intent_modifiers = [
-                "how to use", "benefits of", "guide",
-                "vs", "alternatives", "reviews",
-                "best", "top rated"
+        try:
+            # For testing, reduce base topics
+            base_topics = [
+                "stress relief activities",
+                "therapy putty exercises",
+                # ... commented out for testing
+                # "sensory toys benefits",
+                # "stress relief tools",
+                # "anxiety relief products",
+                # "educational sensory toys",
+                # "occupational therapy tools",
+                # "fidget toys for anxiety"
             ]
             
-            for modifier in intent_modifiers:
-                combined_term = f"{term} {modifier}"
-                suggestions.extend(self.get_google_suggestions(combined_term))
-                time.sleep(0.2)
+            context = f"""Website: {website_url}
+            Industry: Stress relief and sensory products
+            Competitors: {competitor_urls}"""
             
-            # Process found keywords
-            for keyword in suggestions:
-                if keyword and len(keyword.split()) >= 3:  # Only include longer phrases
-                    score = self.calculate_keyword_score(keyword)
-                    keywords.append({
-                        'keyword': keyword,
-                        'score': score,
-                        'word_count': len(keyword.split()),
-                        'is_question': any(q in keyword.lower() for q in ['how', 'what', 'why', 'where', 'when']),
-                        'intent': self.determine_search_intent(keyword),
-                        'base_topic': term
-                    })
+            # Modified prompt to get everything in one call
+            prompt_template = """You are a keyword research expert. Your task is to create a JSON object containing keyword analysis.
 
-        # Sort by score and remove duplicates
-        unique_keywords = {k['keyword']: k for k in keywords}.values()
-        sorted_keywords = sorted(unique_keywords, key=lambda x: x['score'], reverse=True)
-        
-        self.logger.info(f"Analysis complete. Found {len(sorted_keywords)} unique keywords")
-        return sorted_keywords
+            Topic to analyze: {topic}
+            Website: {context}
 
-    def calculate_keyword_score(self, keyword: str) -> int:
-        """Calculate keyword score based on multiple factors."""
-        score = 0
-        word_count = len(keyword.split())
-        
-        # Prefer longer phrases (3-5 words ideal)
-        if 3 <= word_count <= 5:
-            score += 20
-        elif word_count > 5:
-            score += 10
-            
-        # Bonus for question-based keywords
-        if any(q in keyword.lower() for q in ['how', 'what', 'why', 'where', 'when']):
-            score += 15
-            
-        # Bonus for commercial intent
-        if any(term in keyword.lower() for term in ['buy', 'price', 'cost', 'shop']):
-            score += 10
-            
-        # Bonus for informational intent
-        if any(term in keyword.lower() for term in ['how to', 'guide', 'tips']):
-            score += 10
-            
-        return score
+            IMPORTANT: Respond with ONLY a JSON object in this exact format, no other text or explanation:
+            {{
+                "main": {{
+                    "query": "exact topic to analyze",
+                    "intent": "one of: informational/transactional/commercial/navigational",
+                    "tag": "relevant category name",
+                    "volume": "number between 0-10000"
+                }},
+                "variations": [
+                    {{
+                        "query": "longer variation 1",
+                        "intent": "intent type",
+                        "tag": "category",
+                        "volume": number
+                    }},
+                    {{
+                        "query": "longer variation 2",
+                        "intent": "intent type",
+                        "tag": "category",
+                        "volume": number
+                    }},
+                    {{
+                        "query": "longer variation 3",
+                        "intent": "intent type",
+                        "tag": "category",
+                        "volume": number
+                    }}
+                ]
+            }}
 
-    def determine_search_intent(self, keyword: str) -> str:
-        """Determine the search intent of the keyword."""
-        keyword_lower = keyword.lower()
-        
-        if any(term in keyword_lower for term in ['buy', 'price', 'cost', 'shop']):
-            return 'transactional'
-        elif any(term in keyword_lower for term in ['how to', 'guide', 'tips']):
-            return 'informational'
-        elif any(term in keyword_lower for term in ['vs', 'versus', 'compared']):
-            return 'commercial investigation'
-        else:
-            return 'navigational'
+            Remember:
+            1. Return ONLY the JSON object
+            2. Make sure it's valid JSON
+            3. No explanations or additional text
+            4. Use the exact format shown above"""
+            
+            self.logger.info(f"Processing {len(base_topics)} base topics")
+            
+            for topic in base_topics:
+                self.logger.info(f"\n{'='*50}")
+                self.logger.info(f"Processing topic: {topic}")
+                
+                prompt = prompt_template.format(
+                    topic=topic,
+                    context=context
+                )
+                
+                response = self.generate_text(prompt)
+                if response:
+                    try:
+                        self.logger.info("\n=== Processing Response ===")
+                        self.logger.info("Raw response from model:")
+                        self.logger.info("-" * 50)
+                        self.logger.info(response)
+                        self.logger.info("-" * 50)
+                        
+                        data_package = self.clean_and_parse_json(response)
+                        
+                        if not data_package:
+                            self.logger.error("Failed to get valid data package")
+                            continue
+                        
+                        # Add main keyword
+                        if 'main' in data_package:
+                            keywords.append(data_package['main'])
+                            self.logger.info(f"Added main keyword: {data_package['main']}")
+                        
+                        # Add variations
+                        if 'variations' in data_package:
+                            for var in data_package['variations']:
+                                keywords.append(var)
+                                self.logger.info(f"Added variation: {var}")
+                    
+                    except Exception as e:
+                        self.logger.error(f"Error parsing response: {e}")
+                        self.logger.error(f"Problematic response: {response}")
+                else:
+                    self.logger.warning(f"No response generated for topic: {topic}")
+                
+                self.logger.info("Waiting for rate limit...")
+                time.sleep(2)
+            
+            self.logger.info(f"Analysis complete. Found {len(keywords)} keywords")
+            self.logger.info("Final keywords list:")
+            for kw in keywords:
+                self.logger.info(f"  {kw}")
+            return keywords
+            
+        except Exception as e:
+            self.logger.error(f"Error in keyword analysis: {str(e)}")
+            return []
