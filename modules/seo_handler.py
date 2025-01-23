@@ -30,7 +30,7 @@ class SEOKeywordTool:
         self.logger = logging.getLogger(__name__)
 
     def generate_text(self, prompt: str) -> str:
-        """Generate text using Hugging Face API"""
+        """Generate text using Hugging Face API with StarryAI fallback"""
         try:
             self.logger.info("Making API request to Hugging Face...")
             payload = {
@@ -42,11 +42,15 @@ class SEOKeywordTool:
                     "top_p": 0.1  # More focused output
                 }
             }
-            response = requests.post(self.api_url, headers=self.headers, json=payload)
+            response = requests.post(self.api_url, headers=self.headers, json=payload, timeout=30)  # Add timeout
+            
+            if response.status_code == 408 or response.status_code == 504:  # Timeout status codes
+                self.logger.warning("Primary model timed out, falling back to StarryAI...")
+                return self._fallback_to_starryai(prompt)
             
             if response.status_code != 200:
                 self.logger.error(f"API Error: {response.status_code}")
-                return ""
+                return self._fallback_to_starryai(prompt)
                 
             self.logger.info("Received response from API")
             result = response.json()
@@ -55,11 +59,56 @@ class SEOKeywordTool:
                 self.logger.info(f"Generated text: {generated_text[:100]}...")
                 return generated_text
             
-            self.logger.warning("Empty or invalid response from API")
+            self.logger.warning("Empty or invalid response from API, trying fallback...")
+            return self._fallback_to_starryai(prompt)
+            
+        except requests.Timeout:
+            self.logger.warning("Request timed out, falling back to StarryAI...")
+            return self._fallback_to_starryai(prompt)
+        except Exception as e:
+            self.logger.error(f"Generation error: {str(e)}")
+            return self._fallback_to_starryai(prompt)
+
+    def _fallback_to_starryai(self, prompt: str) -> str:
+        """Fallback to StarryAI API when primary model fails"""
+        try:
+            self.logger.info("Attempting StarryAI fallback...")
+            starryai_api_key = os.getenv('STARRYAI_API_KEY')
+            if not starryai_api_key:
+                self.logger.error("StarryAI API key not found")
+                return ""
+
+            headers = {
+                'X-API-Key': starryai_api_key,
+                'accept': 'application/json'
+            }
+            
+            # Create a new generation request
+            response = requests.post(
+                'https://api.starryai.com/creations/',
+                headers=headers,
+                json={
+                    'text_prompt': prompt,
+                    'style_preset': 'text-to-text',  # Assuming this is available
+                    'height': 512,
+                    'width': 512
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                self.logger.error(f"StarryAI API Error: {response.status_code}")
+                return ""
+            
+            result = response.json()
+            if 'text' in result:  # Adjust based on actual StarryAI response structure
+                return result['text']
+            
+            self.logger.warning("No text in StarryAI response")
             return ""
             
         except Exception as e:
-            self.logger.error(f"Generation error: {str(e)}")
+            self.logger.error(f"StarryAI fallback error: {str(e)}")
             return ""
 
     def clean_and_parse_json(self, response: str) -> dict:
@@ -249,7 +298,7 @@ class SEOKeywordTool:
             # Use googlesearch-python to find URLs
             search_results = google_search(
                 query, 
-                num_results=num_results * 3,  # Get extra results to filter
+                num=num_results * 3,  # Get extra results to filter
                 lang="en"
             )
             

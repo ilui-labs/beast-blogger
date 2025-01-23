@@ -32,7 +32,7 @@ class ImageHandler:
         self.logger = logging.getLogger(__name__)
 
     def fetch_image(self, keyword: str, max_retries: int = 3, initial_timeout: int = 20) -> str:
-        """Generate an image based on the keyword using Hugging Face API."""
+        """Generate an image based on the keyword using Hugging Face API with StarryAI fallback."""
         try:
             if self.test_mode:
                 self.logger.info("Test mode: returning placeholder image")
@@ -60,8 +60,8 @@ class ImageHandler:
                         # Model busy or server error
                         retries += 1
                         if retries >= max_retries:
-                            self.logger.error(f"Max retries ({max_retries}) reached. Model unavailable.")
-                            return "Error: Model unavailable"
+                            self.logger.warning(f"Max retries ({max_retries}) reached. Falling back to StarryAI...")
+                            return self._fallback_to_starryai(keyword)
                             
                         # Exponential backoff with jitter
                         wait_time = min(timeout * (2 ** retries) + random.uniform(1, 5), 120)
@@ -71,24 +71,87 @@ class ImageHandler:
                     else:
                         self.logger.error(f"API Error: {response.status_code}")
                         self.logger.error(f"Response content: {response.text}")
-                        return "Error: API error"
-
+                        return self._fallback_to_starryai(keyword)
+                        
                 except requests.Timeout:
                     retries += 1
                     if retries >= max_retries:
-                        self.logger.error("Max retries reached due to timeouts")
-                        return "Error: Request timeout"
+                        self.logger.warning("Max retries reached due to timeouts. Falling back to StarryAI...")
+                        return self._fallback_to_starryai(keyword)
                     
                     timeout = min(timeout * 2, 120)  # Double timeout up to 2 minutes
                     self.logger.warning(f"Request timed out. Retry {retries}/{max_retries} with {timeout}s timeout...")
                     continue
 
-            return "Error: Max retries reached"
+            self.logger.warning("Max retries reached. Falling back to StarryAI...")
+            return self._fallback_to_starryai(keyword)
 
         except Exception as e:
             self.logger.error(f"Error generating image: {str(e)}")
             self.logger.error("Full error:", exc_info=True)
-            return "Error generating image"
+            return self._fallback_to_starryai(keyword)
+
+    def _fallback_to_starryai(self, prompt: str) -> str:
+        """Generate image using StarryAI as fallback"""
+        try:
+            self.logger.info("Attempting StarryAI fallback...")
+            starryai_api_key = os.getenv('STARRYAI_API_KEY')
+            if not starryai_api_key:
+                self.logger.error("StarryAI API key not found")
+                return "Error: StarryAI API key not found"
+
+            headers = {
+                'X-API-Key': starryai_api_key,
+                'accept': 'application/json'
+            }
+            
+            # Create a new generation request
+            response = requests.post(
+                'https://api.starryai.com/creations/',
+                headers=headers,
+                json={
+                    'prompt': prompt,
+                    'height': 1024,
+                    'width': 1024,
+                    'cfg_scale': 7.5,
+                    'seed': random.randint(1, 1000000),
+                    'steps': 50
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                self.logger.error(f"StarryAI API Error: {response.status_code}")
+                return "Error: StarryAI API error"
+            
+            result = response.json()
+            if 'id' in result:
+                # Poll for completion
+                creation_id = result['id']
+                for _ in range(60):  # Poll for up to 5 minutes
+                    status_response = requests.get(
+                        f'https://api.starryai.com/creations/{creation_id}',
+                        headers=headers
+                    )
+                    
+                    if status_response.status_code == 200:
+                        status_data = status_response.json()
+                        if status_data.get('status') == 'completed':
+                            image_url = status_data.get('image_url')
+                            if image_url:
+                                # Download and save the image
+                                img_response = requests.get(image_url)
+                                if img_response.status_code == 200:
+                                    return self.save_and_return_image(img_response)
+                            break
+                    time.sleep(5)  # Wait 5 seconds between polls
+                
+            self.logger.warning("StarryAI generation incomplete or failed")
+            return "Error: StarryAI generation failed"
+            
+        except Exception as e:
+            self.logger.error(f"StarryAI fallback error: {str(e)}")
+            return "Error: StarryAI fallback failed"
 
     def save_and_return_image(self, response) -> str:
         """Save the image and return its file URL"""
