@@ -195,17 +195,25 @@ class BlogAutomationApp:
                                 post = self.content_generator.generate_post(row['query'], dict(row))
                                 
                                 if post:
-                                    # Try to generate image
+                                    # Try to generate image with graceful fallback
                                     try:
                                         image_prompt = self.image_handler.generate_image_prompt(
                                             query=post['keyword'],
                                             intent=row.get('intent', ''),
                                             excerpt=post.get('excerpt', '')
                                         )
-                                        post['image'] = self.image_handler.fetch_image(image_prompt)
+                                        image_url = self.image_handler.fetch_image(image_prompt)
+                                        if image_url.startswith("Error:"):
+                                            st.warning(f"⚠️ {image_url}")
+                                            post['image'] = "https://placehold.co/1920x1080/CCCCCC/000000.png?text=Image+Generation+Failed"
+                                            st.info("ℹ️ Using placeholder image - post will still be created")
+                                        else:
+                                            post['image'] = image_url
+                                            st.success("✅ Image generated successfully")
                                     except Exception as img_error:
-                                        st.error(f"🖼️ Error generating image: {str(img_error)}")
-                                        post['image'] = None
+                                        st.warning(f"⚠️ Image generation skipped: {str(img_error)}")
+                                        post['image'] = "https://placehold.co/1920x1080/CCCCCC/000000.png?text=Image+Generation+Failed"
+                                        st.info("ℹ️ Using placeholder image - post will still be created")
 
                                     # Add to session state
                                     st.session_state.generated_posts.append(post)

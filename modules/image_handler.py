@@ -5,23 +5,10 @@ from config.config import HUGGINGFACE_API_KEY
 import time
 import random
 import logging
-from PIL import Image
 
 class ImageHandler:
     def __init__(self, test_mode: bool = False):
         self.test_mode = test_mode
-        self.api_url = "https://api-inference.huggingface.co/models/Lykon/dreamshaper-8"
-        self.headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-        
-        # Set up image directory
-        self.image_dir = os.path.join(os.getcwd(), 'generated_images')
-        if not os.path.exists(self.image_dir):
-            try:
-                os.makedirs(self.image_dir)
-            except Exception as e:
-                self.logger.warning(f"Could not create images directory: {str(e)}")
-                self.image_dir = os.path.join(os.path.expanduser('~'), 'generated_images')
-                os.makedirs(self.image_dir, exist_ok=True)
         
         # Configure logging
         logging.basicConfig(
@@ -32,69 +19,13 @@ class ImageHandler:
         self.logger = logging.getLogger(__name__)
 
     def fetch_image(self, keyword: str, max_retries: int = 3, initial_timeout: int = 20) -> str:
-        """Generate an image based on the keyword using Hugging Face API with StarryAI fallback."""
+        """Generate an image based on the keyword using StarryAI."""
         try:
             if self.test_mode:
                 self.logger.info("Test mode: returning placeholder image")
-                return "https://placehold.co/1920x1080/000000/FFFFFF.png"  # 16:9 placeholder
+                return "https://placehold.co/1920x1080/000000/FFFFFF.png"
 
-            retries = 0
-            timeout = initial_timeout
-
-            while retries < max_retries:
-                self.logger.info(f"Making API request to generate image (attempt {retries + 1}/{max_retries})...")
-                
-                try:
-                    response = requests.post(
-                        self.api_url,
-                        headers=self.headers,
-                        json={"inputs": keyword},
-                        timeout=timeout  # Add timeout parameter
-                    )
-
-                    # Handle different response codes
-                    if response.status_code == 200:
-                        # Success - process and return image
-                        return self.save_and_return_image(response)
-                    elif response.status_code == 503 or response.status_code == 500:
-                        # Model busy or server error
-                        retries += 1
-                        if retries >= max_retries:
-                            self.logger.warning(f"Max retries ({max_retries}) reached. Falling back to StarryAI...")
-                            return self._fallback_to_starryai(keyword)
-                            
-                        # Exponential backoff with jitter
-                        wait_time = min(timeout * (2 ** retries) + random.uniform(1, 5), 120)
-                        self.logger.warning(f"Model busy or server error. Retry {retries}/{max_retries} in {wait_time:.1f} seconds...")
-                        sleep(wait_time)
-                        continue
-                    else:
-                        self.logger.error(f"API Error: {response.status_code}")
-                        self.logger.error(f"Response content: {response.text}")
-                        return self._fallback_to_starryai(keyword)
-                        
-                except requests.Timeout:
-                    retries += 1
-                    if retries >= max_retries:
-                        self.logger.warning("Max retries reached due to timeouts. Falling back to StarryAI...")
-                        return self._fallback_to_starryai(keyword)
-                    
-                    timeout = min(timeout * 2, 120)  # Double timeout up to 2 minutes
-                    self.logger.warning(f"Request timed out. Retry {retries}/{max_retries} with {timeout}s timeout...")
-                    continue
-
-            self.logger.warning("Max retries reached. Falling back to StarryAI...")
-            return self._fallback_to_starryai(keyword)
-
-        except Exception as e:
-            self.logger.error(f"Error generating image: {str(e)}")
-            self.logger.error("Full error:", exc_info=True)
-            return self._fallback_to_starryai(keyword)
-
-    def _fallback_to_starryai(self, prompt: str) -> str:
-        """Generate image using StarryAI as fallback"""
-        try:
-            self.logger.info("Attempting StarryAI fallback...")
+            self.logger.info("Generating image with StarryAI...")
             starryai_api_key = os.getenv('STARRYAI_API_KEY')
             if not starryai_api_key:
                 self.logger.error("StarryAI API key not found")
@@ -102,7 +33,8 @@ class ImageHandler:
 
             headers = {
                 'X-API-Key': starryai_api_key,
-                'accept': 'application/json'
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
             
             # Create a new generation request
@@ -110,12 +42,14 @@ class ImageHandler:
                 'https://api.starryai.com/creations/',
                 headers=headers,
                 json={
-                    'prompt': prompt,
-                    'height': 1024,
-                    'width': 1024,
+                    'prompt': keyword,
+                    'height': 1080,
+                    'width': 1920,
                     'cfg_scale': 7.5,
                     'seed': random.randint(1, 1000000),
-                    'steps': 50
+                    'steps': 50,
+                    'engine': 'stable-diffusion-xl-v1',
+                    'style_preset': 'digital-art'
                 },
                 timeout=30
             )
@@ -128,50 +62,56 @@ class ImageHandler:
             if 'id' in result:
                 # Poll for completion
                 creation_id = result['id']
-                for _ in range(60):  # Poll for up to 5 minutes
-                    status_response = requests.get(
-                        f'https://api.starryai.com/creations/{creation_id}',
-                        headers=headers
-                    )
+                retry_count = 0
+                max_retries = 60  # 5 minutes total with exponential backoff
+                base_wait = 2  # Start with 2 seconds
+                
+                while retry_count < max_retries:
+                    try:
+                        status_response = requests.get(
+                            f'https://api.starryai.com/creations/{creation_id}',
+                            headers=headers,
+                            timeout=10
+                        )
+                        
+                        if status_response.status_code == 429:  # Rate limit
+                            wait_time = int(status_response.headers.get('Retry-After', base_wait))
+                            self.logger.warning(f"Rate limited, waiting {wait_time} seconds")
+                            time.sleep(wait_time)
+                            continue
+                            
+                        if status_response.status_code == 200:
+                            status_data = status_response.json()
+                            status = status_data.get('status')
+                            
+                            if status == 'completed':
+                                image_url = status_data.get('image_url')
+                                if image_url:
+                                    self.logger.info("Image generation completed successfully")
+                                    return image_url
+                                break
+                            elif status == 'failed':
+                                self.logger.error(f"Generation failed: {status_data.get('error')}")
+                                break
+                                
+                        elif status_response.status_code >= 500:
+                            self.logger.warning("Server error, retrying...")
+                        
+                    except requests.RequestException as e:
+                        self.logger.warning(f"Request error: {str(e)}")
                     
-                    if status_response.status_code == 200:
-                        status_data = status_response.json()
-                        if status_data.get('status') == 'completed':
-                            image_url = status_data.get('image_url')
-                            if image_url:
-                                # Download and save the image
-                                img_response = requests.get(image_url)
-                                if img_response.status_code == 200:
-                                    return self.save_and_return_image(img_response)
-                            break
-                    time.sleep(5)  # Wait 5 seconds between polls
+                    # Exponential backoff with jitter
+                    wait_time = min(30, base_wait * (2 ** retry_count)) + random.uniform(0, 1)
+                    time.sleep(wait_time)
+                    retry_count += 1
                 
             self.logger.warning("StarryAI generation incomplete or failed")
             return "Error: StarryAI generation failed"
             
         except Exception as e:
-            self.logger.error(f"StarryAI fallback error: {str(e)}")
-            return "Error: StarryAI fallback failed"
-
-    def save_and_return_image(self, response) -> str:
-        """Save the image and return its file URL"""
-        try:
-            images_dir = os.path.join(os.getcwd(), 'generated_images')
-            os.makedirs(images_dir, exist_ok=True)
-            
-            timestamp = int(time.time())
-            filename = f"beast_putty_{timestamp}.png"
-            filepath = os.path.join(images_dir, filename)
-            
-            with open(filepath, 'wb') as f:
-                f.write(response.content)
-            
-            self.logger.info(f"Successfully saved image to: {filepath}")
-            return f"file://{filepath}"
-            
-        except Exception as e:
-            self.logger.error(f"Error saving image: {str(e)}")
-            return "Error saving image"
+            self.logger.error(f"Error generating image: {str(e)}")
+            self.logger.error("Full error:", exc_info=True)
+            return "Error: Image generation failed"
 
     def generate_image_prompt(self, query: str, intent: str = None, excerpt: str = None) -> str:
         """Generate a creative prompt for image generation."""
@@ -227,7 +167,6 @@ class ImageHandler:
             f"a biker bar brawl where the bikers are throwing {query} at each other",
             f"a superhero showdown where their powers are fueled by glowing {query}"
         ]
-        
 
         # Combine elements
         scenario = random.choice(absurd_scenarios)
@@ -242,4 +181,4 @@ class ImageHandler:
         # Log the final prompt
         self.logger.info(f"Generated prompt: {prompt[:100]}...")
         
-        return prompt 
+        return prompt

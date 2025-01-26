@@ -21,49 +21,27 @@ class ShopifyUploader:
             excerpt = post['excerpt']
             image_url = post.get('image', '')
 
-            # Handle local file paths
-            if image_url.startswith('file://'):
-                try:
-                    # Convert file URL to actual file path
-                    file_path = image_url[7:]  # Remove 'file://' prefix
-                    print(f"Uploading image from path: {file_path}")
-                    
-                    # Create new article with image
-                    article = shopify.Article({
-                        'blog_id': 85728755847,
-                        'title': title,
-                        'author': "Jackson Blacklock",
-                        'body_html': post['content'],
-                        'summary': excerpt,
-                        'published': False,
-                        'image': {
-                            'attachment': base64.b64encode(open(file_path, 'rb').read()).decode()
-                        }
-                    })
-                    
-                    if article.save():
-                        print(f"Article and image uploaded successfully")
-                        return article
-                    else:
-                        print(f"Error saving article: {article.errors.full_messages()}")
-                        return None
-                        
-                except Exception as img_error:
-                    print(f"Error uploading article with image: {str(img_error)}")
-                    return None
+            # Prepare article data
+            article_data = {
+                "blogId": "gid://shopify/Blog/85728755847",
+                "title": title,
+                "author": {
+                    "name": "Jackson Blacklock"
+                },
+                "body": post['content'],
+                "summary": excerpt,
+                "isPublished": False
+            }
 
-            # If no image or error occurred, try without image
-            variables = {
-                "article": {
-                    "blogId": "gid://shopify/Blog/85728755847",
-                    "title": title,
-                    "author": {
-                        "name": "Jackson Blacklock"
-                    },
-                    "body": post['content'],
-                    "summary": excerpt,
-                    "isPublished": False
+            # Add image if URL is provided
+            if image_url and image_url.startswith('http'):
+                article_data["image"] = {
+                    "altText": title,
+                    "src": image_url
                 }
+
+            variables = {
+                "article": article_data
             }
             
             mutation = """
@@ -104,4 +82,4 @@ class ShopifyUploader:
         except Exception as e:
             print(f"Error uploading post: {post['title']}")
             print(traceback.format_exc())
-            raise Exception(f"Shopify upload error: {str(e)}") 
+            raise Exception(f"Shopify upload error: {str(e)}")
