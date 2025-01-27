@@ -32,86 +32,158 @@ class ImageHandler:
                 return "Error: StarryAI API key not found"
 
             headers = {
-                'X-API-Key': starryai_api_key,
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
+                'accept': 'application/json',
+                'content-type': 'application/json',
+                'X-API-Key': starryai_api_key
             }
             
-            # Create a new generation request
+            # Create generated_images directory if it doesn't exist
+            os.makedirs('generated_images', exist_ok=True)
+            
+            # Create a new generation request with parameters from API docs
+            generation_params = {
+                'prompt': keyword,
+                'model': 'lyra',
+                'aspectRatio': 'square',
+                'highResolution': False,
+                'images': 1,
+                'steps': 30
+            }
+            
+            self.logger.info(f"Sending generation request with params: {generation_params}")
+            
             response = requests.post(
                 'https://api.starryai.com/creations/',
                 headers=headers,
-                json={
-                    'prompt': keyword,
-                    'height': 1080,
-                    'width': 1920,
-                    'cfg_scale': 7.5,
-                    'seed': random.randint(1, 1000000),
-                    'steps': 50,
-                    'engine': 'stable-diffusion-xl-v1',
-                    'style_preset': 'digital-art'
-                },
+                json=generation_params,
                 timeout=30
             )
             
             if response.status_code != 200:
-                self.logger.error(f"StarryAI API Error: {response.status_code}")
-                return "Error: StarryAI API error"
+                error_msg = f"StarryAI API Error: {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if 'error' in error_data:
+                        error_msg += f" - {error_data['error']}"
+                except:
+                    pass
+                self.logger.error(error_msg)
+                return f"Error: {error_msg}"
             
             result = response.json()
-            if 'id' in result:
-                # Poll for completion
-                creation_id = result['id']
-                retry_count = 0
-                max_retries = 60  # 5 minutes total with exponential backoff
-                base_wait = 2  # Start with 2 seconds
+            creation_id = result.get('id')
+            if not creation_id:
+                self.logger.error("No generation ID received from API")
+                return "Error: Invalid API response"
                 
-                while retry_count < max_retries:
-                    try:
-                        status_response = requests.get(
-                            f'https://api.starryai.com/creations/{creation_id}',
-                            headers=headers,
-                            timeout=10
-                        )
-                        
-                        if status_response.status_code == 429:  # Rate limit
-                            wait_time = int(status_response.headers.get('Retry-After', base_wait))
-                            self.logger.warning(f"Rate limited, waiting {wait_time} seconds")
-                            time.sleep(wait_time)
-                            continue
-                            
-                        if status_response.status_code == 200:
-                            status_data = status_response.json()
-                            status = status_data.get('status')
-                            
-                            if status == 'completed':
-                                image_url = status_data.get('image_url')
-                                if image_url:
-                                    self.logger.info("Image generation completed successfully")
-                                    return image_url
-                                break
-                            elif status == 'failed':
-                                self.logger.error(f"Generation failed: {status_data.get('error')}")
-                                break
-                                
-                        elif status_response.status_code >= 500:
-                            self.logger.warning("Server error, retrying...")
-                        
-                    except requests.RequestException as e:
-                        self.logger.warning(f"Request error: {str(e)}")
+            # Poll for completion with improved error handling
+            retry_count = 0
+            max_retries = 30  # 5 minutes total with exponential backoff
+            base_wait = 10     # Start with 10 seconds
+            
+            self.logger.info(f"Generation started with ID: {creation_id}")
+            
+            while retry_count < max_retries:
+                try:
+                    # Use the GET creation endpoint from the docs
+                    status_response = requests.get(
+                        f'https://api.starryai.com/creations/{creation_id}',
+                        headers=headers,
+                        timeout=10
+                    )
                     
-                    # Exponential backoff with jitter
-                    wait_time = min(30, base_wait * (2 ** retry_count)) + random.uniform(0, 1)
-                    time.sleep(wait_time)
-                    retry_count += 1
+                    if status_response.status_code == 200:
+                        status_data = status_response.json()
+                        
+                        # Check if the image is ready or expired
+                        if status_data.get('expired', False):
+                            self.logger.warning("Image generation has expired")
+                            return "Error: Image generation expired"
+                        
+                        # Check generation status
+                        status = status_data.get('status')
+                        
+                        if status in ['completed', 'succeeded']:
+                            # Log full status data for debugging
+                            self.logger.info(f"Full status data: {status_data}")
+                            
+                            # Extract image URL from the images array
+                            image_url = None
+                            images = status_data.get('images', [])
+                            
+                            # Find the first non-expired image
+                            for img in images:
+                                if not img.get('expired', True):
+                                    image_url = img.get('url')
+                                    break
+                            
+                            # If no image found, try direct URL extraction
+                            if not image_url and images:
+                                image_url = images[0].get('url')
+                            
+                            # Fallback to other URL extraction methods if no valid image found
+                            if not image_url:
+                                image_url = (
+                                    status_data.get('imageUrl') or 
+                                    status_data.get('image_url') or 
+                                    status_data.get('url') or 
+                                    next((artifact.get('url') for artifact in status_data.get('artifacts', []) if artifact.get('url')), None)
+                                )
+                            
+                            if image_url:
+                                # Generate a unique filename
+                                timestamp = int(time.time())
+                                safe_keyword = ''.join(c if c.isalnum() else '_' for c in keyword[:20])
+                                filename = f'generated_images/beast_putty_{safe_keyword}_{timestamp}.png'
+                                
+                                # Download and save the image
+                                try:
+                                    image_response = requests.get(image_url, timeout=30)
+                                    if image_response.status_code == 200:
+                                        with open(filename, 'wb') as f:
+                                            f.write(image_response.content)
+                                        self.logger.info(f"Image saved locally: {filename}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to save image: {str(e)}")
+                                
+                                self.logger.info("Image generation completed successfully")
+                                return image_url
+                            
+                            # If no URL found, log detailed error
+                            self.logger.error("No image URL found in completed response")
+                            self.logger.error(f"Status data keys: {list(status_data.keys())}")
+                            self.logger.error(f"Images data: {images}")
+                            return "Error: No image URL found"
+                        
+                        elif status in ['processing', 'queued', 'submitted', 'in progress']:
+                            # Wait and retry
+                            wait_time = min(60, base_wait * (2 ** retry_count)) + random.uniform(0, 2)
+                            self.logger.info(f"Image status: {status}. Waiting {wait_time:.1f} seconds")
+                            time.sleep(wait_time)
+                            retry_count += 1
+                        
+                        else:
+                            # Handle other statuses
+                            self.logger.error(f"Unexpected status: {status}")
+                            self.logger.error(f"Full status data: {status_data}")
+                            return f"Error: Unexpected generation status - {status}"
+                    
+                    else:
+                        self.logger.warning(f"Unexpected status code: {status_response.status_code}")
+                        return f"Error: Unexpected API response {status_response.status_code}"
                 
-            self.logger.warning("StarryAI generation incomplete or failed")
-            return "Error: StarryAI generation failed"
+                except requests.RequestException as e:
+                    self.logger.warning(f"Request error: {str(e)}")
+                    time.sleep(base_wait)
+                    retry_count += 1
+            
+            self.logger.warning("StarryAI generation timed out")
+            return "Error: Generation timed out"
             
         except Exception as e:
-            self.logger.error(f"Error generating image: {str(e)}")
+            self.logger.error(f"Unexpected error generating image: {str(e)}")
             self.logger.error("Full error:", exc_info=True)
-            return "Error: Image generation failed"
+            return "Error: Unexpected image generation failure"
 
     def generate_image_prompt(self, query: str, intent: str = None, excerpt: str = None) -> str:
         """Generate a creative prompt for image generation."""

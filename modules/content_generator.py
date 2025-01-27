@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 class ContentGenerator:
     def __init__(self, persona: str, test_mode: bool = False):
         self.persona = PERSONAS.get(persona, PERSONAS['professional'])
+        # self.test_mode = test_mode  # Add test mode flag
         self.test_mode = test_mode  # Add test mode flag
         self.client = OpenAI(api_key=OPENAI_API_KEY)
         self.logger = logging.getLogger(__name__)
@@ -23,72 +24,6 @@ class ContentGenerator:
             return response.status_code == 200
         except:
             return False
-
-    def generate_blog_post(self, keyword: str) -> Dict:
-        """Generate a blog post optimized for the given keyword"""
-        try:
-            if self.test_mode:
-                # Return test content if in test mode
-                return {
-                    'keyword': keyword,
-                    'title': f"Test Title for {keyword}",
-                    'excerpt': f"This is a test excerpt for a blog post about {keyword}.",
-                    'content': f"This is a test blog post about {keyword}.",
-                    'status': 'generated'
-                }
-
-            # Create the prompt with persona and SEO requirements
-            prompt = f"""
-            You are a blog post writer. {self.persona}
-            Create a comprehensive blog post optimized for the keyword: {keyword}
-
-            Include:
-            1. A catchy and relevant title (ensure it is optimized for URL generation with one or two relevant keywords, avoiding keyword stuffing)
-            2. A brief excerpt summarizing the main points of the post
-            3. An engaging introduction
-            4. At least 3 informative subheadings
-            5. Relevant content under each subheading (do not repeat the title in the content)
-            6. A conclusion
-            7. Natural keyword placement throughout the content
-            8. At least 2 verified external links from the trusted domains above
-            9. At least 2 internal links using ONLY the verified URLs provided
-
-            Format the output as follows:
-            <title>The generated title</title>
-            <excerpt>The generated excerpt</excerpt>
-            <content>The generated blog post content in HTML format (only the HTML content between the body tags, without any head, or body tags)</content>
-            """
-
-            # Make a request to the OpenAI API using the new interface
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Use the GPT-4o Mini model
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=1995,  # Adjusted for 1000-1500 words
-                temperature=0.85,  # Increased for more creativity
-                n=1  # Number of responses to generate
-            )
-
-            generated_text = response.choices[0].message.content
-            title_start = generated_text.find("<title>") + len("<title>")
-            title_end = generated_text.find("</title>")
-            excerpt_start = generated_text.find("<excerpt>") + len("<excerpt>")
-            excerpt_end = generated_text.find("</excerpt>")
-            content_start = generated_text.find("<content>") + len("<content>")
-            content_end = generated_text.find("</content>")
-
-            title = generated_text[title_start:title_end].strip()
-            excerpt = generated_text[excerpt_start:excerpt_end].strip()
-            content = generated_text[content_start:content_end].strip()
-
-            return {
-                'keyword': keyword,
-                'title': title,
-                'excerpt': excerpt,
-                'content': content,
-                'status': 'generated'
-            }
-        except Exception as e:
-            raise Exception(f"Content generation error: {str(e)}")
 
     def generate_multiple_posts(self, keywords: List[str], keyword_data: List[Dict] = None) -> List[Dict]:
         """Generate multiple blog posts with keyword data."""
@@ -129,6 +64,16 @@ class ContentGenerator:
     def generate_post(self, keyword: str, keyword_data: Dict = None) -> Dict:
         """Generate a single blog post using keyword data."""
         try:
+            if self.test_mode:
+                # Return test content if in test mode
+                return {
+                    'keyword': keyword,
+                    'title': f"Test Title for {keyword}",
+                    'excerpt': f"This is a test excerpt for a blog post about {keyword}.",
+                    'content': f"This is a test blog post about {keyword}.",
+                    'status': 'generated'
+                }
+            # Log function call
             self.logger.info("\n=== Starting Post Generation ===")
             self.logger.info(f"Keyword: {keyword}")
             self.logger.info(f"Data: {keyword_data}")
