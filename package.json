@@ -1,0 +1,41 @@
+{
+  "name": "beast-blogger",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "type-check": "tsc --noEmit",
+    "fix:all": "npm run lint:fix && npm run type-check"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ilui-labs/beast-blogger.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ilui-labs/beast-blogger/issues"
+  },
+  "homepage": "https://github.com/ilui-labs/beast-blogger#readme",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.5.0"
+  },
+  "dependencies": {
+    "@huggingface/inference": "^3.1.2",
+    "ai": "^4.1.9",
+    "dotenv": "^16.4.7",
+    "graphql-request": "^7.1.2"
+  }
+}

@@ -1,115 +1,189 @@
-# Beast Blogger: Strategic Vision
+# Beast Blogger Node.js Platform Plan
 
-## Core Purpose
-Transform Beast Blogger into an autonomous content generation and publishing system that creates high-performing, SEO-optimized content at scale while maintaining our irreverent, edgy brand voice.
+## Core Architecture
 
-## Key Components
+### AI Model Configuration
+- Primary: DeepSeek Janus-Pro
+- Interface: Hugging Face API
+- Fallback Strategy: Configurable model swapping
+- Response Format: Structured JSON
 
-### 1. Content Generation Engine
-- **AI Writing Pipeline**
-  - Multiple personas with distinct voices
-  - Dark humor and edgy content filters
-  - Anti-corporate, rebellious tone maintenance
-  - Automated fact-checking and source citation
+### Platform Components
+- Node.js Backend
+- Vercel AI SDK Integration
+- SEO Analysis Engine
+- Content Generation System
+- Email Preview Service
+- Shopify Integration
+- Image Processing
+- Approval Workflow
 
-### 2. SEO Optimization System
-- **Keyword Research**
-  - Competitor analysis
-  - Longtail keyword identification
-  - Search intent mapping
-  - Keyword cannibalization prevention
+## Implementation Strategy
 
-- **Content Strategy**
-  - Topic clustering
-  - Internal linking automation
-  - Content gap analysis
-  - Trending topic identification
+### Phase 1: Project Setup
+- Initialize Node.js project
+- Configure TypeScript
+- Set up Vercel AI SDK
+- Implement model configuration
+- Configure environment variables
 
-### 3. Publishing Automation
-- **Platform Integration**
-  - Direct to Shopify blog
-  - WordPress compatibility
-  - Medium cross-posting
-  - Social media distribution
+### Phase 2: Core Services
 
-- **Schedule Optimization**
-  - Peak engagement time analysis
-  - Geographic audience targeting
-  - Content freshness maintenance
-  - Update scheduling for existing posts
+#### SEO Handler Service
+- Keyword analysis system
+- Competition evaluation
+- Search volume tracking
+- Long-tail opportunity finder
+- Organic ranking potential calculator
 
-### 4. Performance Analytics
-- **Metrics Tracking**
-  - Traffic analysis
-  - Engagement monitoring
-  - Conversion tracking
-  - ROI calculation
+#### Content Generator Service
+- Post structure builder
+- Content optimization
+- Image selection/generation
+- Link validation
+- SEO metadata generator
 
-- **Content Optimization**
-  - A/B testing headlines
-  - Image performance analysis
-  - Reader behavior analysis
-  - Content improvement suggestions
+#### Email Service
+- Preview template system
+- Feedback collection
+- Revision tracking
+- Approval workflow
 
-## Development Phases
+#### Shopify Integration
+- Post publication system
+- Media management
+- Visibility controls
+- Meta information handler
 
-### Phase 1: Foundation (Current)
-- Basic content generation
-- Simple SEO keyword research
-- Manual publishing
-- Single platform focus
+### Phase 3: AI Patterns Implementation
 
-### Phase 2: Automation
-- Advanced AI writing
-- Automated keyword research
-- Multi-platform publishing
-- Basic analytics integration
+#### Evaluator-Optimizer Pattern
+- Content quality evaluator
+- SEO score optimizer
+- Readability analyzer
+- Keyword density optimizer
+- Link relevance checker
 
-### Phase 3: Intelligence
-- Self-learning content optimization
-- Predictive analytics
-- Automated content updating
-- Multi-channel distribution
+#### Parallel Processing
+- Concurrent API calls
+- Batch processing
+- Rate limiting handler
+- Resource optimization
+- Error recovery
 
-### Phase 4: Scale
-- Enterprise-level automation
-- API-first architecture
-- White-label solutions
-- Agency partnerships
+## Data Structures
 
-## Success Metrics
-1. Content Production
-   - 10+ high-quality posts per day
-   - 95% pass rate on quality checks
-   - < 5% duplicate content
+### Content Package
+- SEO metadata
+- Content body
+- Image references
+- Internal links
+- Technical specifications
 
-2. SEO Performance
-   - 80% of posts on page 1 within 6 months
-   - 50% increase in organic traffic monthly
-   - 30% improvement in SERP rankings
+### Revision Package
+- Feedback data
+- Change requests
+- Preserved elements
+- Additional requirements
 
-3. Engagement
-   - < 40% bounce rate
-   - 3+ minute average time on page
-   - 15% social share rate
+## Workflow Sequence
 
-4. Business Impact
-   - 200% ROI on content investment
-   - 40% reduction in content production costs
-   - 75% decrease in manual intervention
+### Content Generation
+1. SEO keyword analysis
+2. Content structure planning
+3. Draft generation
+4. Image selection
+5. Link integration
 
-## Competitive Advantage
-- Unique, edgy brand voice
-- Full automation capability
-- SEO-first approach
-- Scalable architecture
-- Multi-platform support
+### Review Process
+1. Email preview generation
+2. Feedback collection
+3. Revision processing
+4. Final approval
+5. Publication
 
-## Future Expansion
-- API access for third-party integration
-- Custom deployment options
-- Agency partnerships
-- White-label solutions
-- Content marketplace integration
+## Technical Specifications
 
-Remember: We're not just building another content tool - we're creating a rebellion against boring, corporate content while maintaining SEO effectiveness. 
+### Dependencies
+- Vercel AI SDK
+- Node.js core modules
+- TypeScript
+- Email service
+- Shopify API
+- Image processing
+- SEO tools
+
+### API Integration
+- Hugging Face endpoints
+- Shopify REST API
+- Email service API
+- Image service API
+
+### Security
+- API key management
+- Rate limiting
+- Request validation
+- Error handling
+
+## Monitoring & Maintenance
+
+### Performance Metrics
+- Response times
+- Success rates
+- Resource usage
+- API quotas
+
+### Quality Assurance
+- Content quality scores
+- SEO performance
+- User engagement
+- Conversion tracking
+
+## Future Enhancements
+
+### Potential Features
+- Multi-model support
+- Advanced analytics
+- Enhanced image processing
+- Extended e-commerce integration
+
+### Scalability
+- Load balancing
+- Caching implementation
+- Database optimization
+- API redundancy
+
+## Development Guidelines
+
+### Code Standards
+- TypeScript strict mode
+- Async/await patterns
+- Error handling
+- Documentation
+
+### Testing Strategy
+- Unit testing
+- Integration testing
+- End-to-end testing
+- Performance testing
+
+## Deployment Strategy
+
+### Environment Setup
+- Development
+- Staging
+- Production
+- Monitoring
+
+### Backup Systems
+- Data backups
+- Configuration backups
+- Version control
+- Recovery procedures
+
+### Prompt
+```
+Read @plan.md and start the build. You are a principle engineer at your startup building this new app for your client. 
+
+You work smart and systematic. Taking your time to reduce mistakes. If you need any help, as me, I am your product manager.
+```
