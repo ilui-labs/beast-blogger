@@ -1,5 +1,35 @@
-import { HfInference } from '@huggingface/inference';
-import { ContentStructure } from '../content/ContentGeneratorService';
+import { ChatOpenAI } from '@langchain/openai';
+import { PromptTemplate } from '@langchain/core/prompts';
+import { StructuredOutputParser } from 'langchain/output_parsers';
+import { z } from 'zod';
+import OpenAI from 'openai';
+
+export interface ContentStructure {
+  title: string;
+  excerpt: string;
+  content: string;
+  metadata: {
+    title: string;
+    description: string;
+    keywords: string[];
+  };
+  sources: Array<{
+    url: string;
+    name: string;
+    citation: string;
+  }>;
+  links: Array<{
+    url: string;
+    text: string;
+    isInternal: boolean;
+  }>;
+  images?: Array<{
+    url: string;
+    alt: string;
+    caption: string;
+  }>;
+  htmlContent?: string;
+}
 
 export interface ImageScenario {
   description: string;
@@ -17,46 +47,65 @@ export interface GeneratedImage {
 }
 
 export class ImageHandlerService {
-  private hf: HfInference;
-  private model: string = 'deepseek-ai/janus-pro';
+  private llm: ChatOpenAI;
+  private openai: OpenAI;
   private persona: string = 'You are a creative director who loves absurd humor and finding ways to connect Beast Putty to everyday situations in the most ridiculous ways possible.';
 
-  constructor(apiKey: string) {
-    this.hf = new HfInference(apiKey);
+  constructor(openAiKey: string) {
+    this.llm = new ChatOpenAI({
+      modelName: 'gpt-4',
+      temperature: 0.9,
+      openAIApiKey: openAiKey,
+    });
+
+    this.openai = new OpenAI({
+      apiKey: openAiKey,
+    });
   }
 
   async generateScenario(content: ContentStructure): Promise<ImageScenario> {
     try {
-      const prompt = `${this.persona}\n\nCreate an absurd scenario for an image based on this blog post:\nTitle: ${content.title}\nKeywords: ${content.metadata.keywords.join(', ')}\n\nThe scenario should:\n1. Be completely ridiculous and unexpected\n2. Incorporate Beast Putty in a creative way\n3. Relate to the blog content theme\n4. Be visually interesting\n\nFormat the response as:\nDescription: [brief scenario description]\nPrompt: [detailed image generation prompt]\nKeywords: [relevant keywords]\nAbsurdity Level: [1-10]\nBeast Putty Connection: [how Beast Putty fits in]`;
+      const parser = StructuredOutputParser.fromZodSchema(
+        z.object({
+          description: z.string(),
+          prompt: z.string(),
+          relevantKeywords: z.array(z.string()),
+          absurdityLevel: z.number().min(1).max(10),
+          beastPuttyConnection: z.string(),
+        })
+      );
 
-      const response = await this.hf.textGeneration({
-        model: this.model,
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 500,
-          temperature: 0.9
-        }
+      const prompt = new PromptTemplate({
+        template: `{persona}
+
+Create an absurd scenario for an image based on this blog post:
+Title: {title}
+Keywords: {keywords}
+
+The scenario should:
+1. Be completely ridiculous and unexpected
+2. Incorporate Beast Putty in a creative way
+3. Relate to the blog content theme
+4. Be visually interesting
+
+{format_instructions}`,
+        inputVariables: ['persona', 'title', 'keywords'],
+        partialVariables: {
+          format_instructions: parser.getFormatInstructions(),
+        },
       });
 
-      const aiResponse = response.generated_text;
-      
-      // Parse the response
-      const descriptionMatch = aiResponse.match(/Description:\s*([^\n]+)/);
-      const promptMatch = aiResponse.match(/Prompt:\s*([^\n]+)/);
-      const keywordsMatch = aiResponse.match(/Keywords:\s*([^\n]+)/);
-      const absurdityMatch = aiResponse.match(/Absurdity Level:\s*(\d+)/);
-      const connectionMatch = aiResponse.match(/Beast Putty Connection:\s*([^\n]+)/);
+      const input = await prompt.format({
+        persona: this.persona,
+        title: content.title,
+        keywords: content.metadata.keywords.join(', '),
+      });
 
-      return {
-        description: descriptionMatch ? descriptionMatch[1].trim() : '',
-        prompt: promptMatch ? promptMatch[1].trim() : '',
-        relevantKeywords: keywordsMatch ? keywordsMatch[1].split(',').map(k => k.trim()) : [],
-        absurdityLevel: absurdityMatch ? parseInt(absurdityMatch[1]) : 5,
-        beastPuttyConnection: connectionMatch ? connectionMatch[1].trim() : ''
-      };
+      const response = await this.llm.invoke(input);
+      return await parser.parse(response.content.toString());
     } catch (error) {
-      console.error('Error generating image scenario:', error);
-      throw error;
+      console.error('Error generating image scenario:', error instanceof Error ? error.message : 'Unknown error');
+      throw new Error('Failed to generate image scenario');
     }
   }
 
@@ -71,24 +120,27 @@ ${scenario.prompt}
 Make sure to incorporate these elements:
 - Beast Putty connection: ${scenario.beastPuttyConnection}
 - Keywords: ${scenario.relevantKeywords.join(', ')}
-- Absurdity Level: ${scenario.absurdityLevel}/10`;
+- Absurdity Level: ${scenario.absurdityLevel}/10
 
-      const response = await this.hf.textToImage({
-        model: this.model,
-        inputs: prompt,
-        parameters: {
-          negative_prompt: "blurry, low quality, distorted, unrealistic",
-          num_inference_steps: 50,
-          guidance_scale: 7.5
-        }
+Style: Digital art style, vibrant colors, neon colors, high detail, surreal`;
+
+      const response = await this.openai.images.generate({
+        model: 'dall-e-3',
+        prompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+        style: 'vivid'
       });
 
-      if (!response) {
+      if (!response.data || response.data.length === 0) {
         throw new Error('Failed to generate image');
       }
 
-      // Convert the image to base64 URL
-      const imageUrl = `data:image/jpeg;base64,${response}`;
+      const imageUrl = response.data[0].url;
+      if (!imageUrl) {
+        throw new Error('No image URL in response');
+      }
 
       return {
         url: imageUrl,
@@ -97,8 +149,8 @@ Make sure to incorporate these elements:
         scenario
       };
     } catch (error) {
-      console.error('Error generating image:', error);
-      throw error;
+      console.error('Error generating image:', error instanceof Error ? error.message : 'Unknown error');
+      throw new Error('Failed to generate image');
     }
   }
 
@@ -107,20 +159,23 @@ Make sure to incorporate these elements:
       const scenario = await this.generateScenario(content);
       const image = await this.generateImage(scenario);
 
-      const enhancedContent = { ...content };
-      enhancedContent.images = [
-        ...enhancedContent.images,
-        {
-          url: image.url,
-          alt: image.alt,
-          caption: image.caption
-        }
-      ];
+      const enhancedContent = { 
+        ...content,
+        images: [
+          ...(content.images || []),
+          {
+            url: image.url,
+            alt: image.alt,
+            caption: image.caption
+          }
+        ],
+        htmlContent: content.htmlContent || content.content
+      };
 
       // Add image reference to HTML content
       const imageHtml = `
         <figure class="content-image">
-          <img src="${image.url}" alt="${image.alt}" />
+          <img src="${image.url}" alt="${image.alt}" loading="lazy" />
           <figcaption>${image.caption}</figcaption>
         </figure>
       `;
@@ -136,8 +191,8 @@ Make sure to incorporate these elements:
 
       return enhancedContent;
     } catch (error) {
-      console.error('Error enhancing content with images:', error);
-      throw error;
+      console.error('Error enhancing content with images:', error instanceof Error ? error.message : 'Unknown error');
+      throw new Error('Failed to enhance content with images');
     }
   }
 }

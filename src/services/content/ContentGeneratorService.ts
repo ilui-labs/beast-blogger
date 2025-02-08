@@ -1,85 +1,60 @@
-import { HfInference } from '@huggingface/inference';
-import { SEOMetadata } from '../seo/types';
-import * as cheerio from 'cheerio';
+import { ChatOpenAI } from '@langchain/openai';
+import { PromptTemplate } from '@langchain/core/prompts';
+import { StructuredOutputParser } from 'langchain/output_parsers';
+import { z } from 'zod';
+import { CheerioWebBaseLoader } from '@langchain/community/document_loaders/web/cheerio';
 
 export interface ContentStructure {
   title: string;
   excerpt: string;
   content: string;
-  metadata: SEOMetadata;
-  sources: Array<{
-    url: string;
-    name: string;
-    citation: string;
-  }>;
+  metadata: {
+    keywords: string[];
+    rejectionHistory?: Array<{
+      timestamp: Date;
+      feedback?: string;
+      tone?: string;
+      specificIssues?: string[];
+      urgency?: 'low' | 'medium' | 'high';
+    }>;
+  };
   links: Array<{
     url: string;
     text: string;
     isInternal: boolean;
   }>;
+  images?: Array<{
+    url: string;
+    alt: string;
+    caption: string;
+  }>;
+  htmlContent?: string;
+  shopifyData?: {
+    id: string;
+    handle: string;
+    publishedAt: Date;
+  };
+}
+
+interface ValidatedLink {
+  url: string;
+  text: string;
+  isValid: boolean;
+  isInternal: boolean;
 }
 
 export class ContentGeneratorService {
-  private hf: HfInference;
-  private model: string = 'deepseek-ai/DeepSeek-V3';
+  private llm: ChatOpenAI;
   private persona: string = 'Write in a tone that is quirky, witty, very irreverent, and love sharing the benefits of Beast Putty and some total bullshit.';
+  private readonly internalDomain = 'beastputty.com';
 
-  constructor(apiKey: string) {
-    this.hf = new HfInference(apiKey);
+  constructor(openAiKey: string) {
+    this.llm = new ChatOpenAI({
+      modelName: 'gpt-4',
+      temperature: 0.8,
+      openAIApiKey: openAiKey,
+    });
   }
-
-  async evaluateContent(topic: string, keywords: string[]): Promise<ContentStructure> {
-    try {
-      const prompt = `Create a blog post about: ${topic}\nKeywords: ${keywords.join(', ')}\n\nProvide:\n1. An engaging title\n2. A brief excerpt (max 160 chars)\n3. 3-4 key points to cover\n4. Suggested sources or references\n\nFormat as:\nTitle: [title]\nExcerpt: [excerpt]\nKey Points:\n- [point 1]\n- [point 2]\netc.\n\nSources:\n- [source name] - [url]`;
-
-      const response = await this.hf.textGeneration({
-        model: this.model,
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 800,
-          temperature: 0.7
-        }
-      });
-
-      const aiResponse = response.generated_text;
-      
-      // Parse the AI response
-      const titleMatch = aiResponse.match(/Title:\s*([^\n]+)/);
-      const excerptMatch = aiResponse.match(/Excerpt:\s*([^\n]+)/);
-      const sourcesMatch = aiResponse.match(/Sources:[\s\S]*$/);
-
-      const sources = sourcesMatch ? sourcesMatch[0]
-        .split('\n')
-        .slice(1)
-        .filter(line => line.trim())
-        .map(line => {
-          const [name, url] = line.replace(/^-\s*/, '').split('-').map(s => s.trim());
-          return {
-            name: name || 'Reference',
-            url: url || '#',
-            citation: line.trim()
-          };
-        }) : [];
-
-      return {
-        title: titleMatch ? titleMatch[1].trim() : topic,
-        excerpt: excerptMatch ? excerptMatch[1].trim() : '',
-        content: '',
-        metadata: {
-          title: '',
-          description: '',
-          keywords
-        },
-        sources,
-        links: []
-      };
-    } catch (error) {
-      console.error('Error evaluating content:', error);
-      throw error;
-    }
-  }
-
-  private logger = console;
 
   private async validateUrl(url: string): Promise<boolean> {
     if (url.startsWith('#')) {
@@ -89,7 +64,7 @@ export class ContentGeneratorService {
     try {
       const urlObj = new URL(url);
       if (!(urlObj.protocol === 'http:' || urlObj.protocol === 'https:')) {
-        this.logger.warn(`Invalid protocol: ${urlObj.protocol}`);
+        console.warn(`Invalid protocol: ${urlObj.protocol}`);
         return false;
       }
 
@@ -101,170 +76,140 @@ export class ContentGeneratorService {
       });
       return response.ok;
     } catch (error) {
-      this.logger.warn(`Failed to validate URL ${url}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.warn(`Failed to validate URL ${url}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return false;
     }
   }
 
-  private async getInternalLinks(): Promise<Array<{ title: string; url: string; description: string }>> {
+  private async getInternalLinks(): Promise<Array<{ url: string; text: string; }>> {
     try {
-      const blog_url = 'https://www.beastputty.com/blogs/molding-destiny';
-      const response = await fetch(blog_url, {
-        headers: {
-          'User-Agent': 'BeastBlogger/1.0'
+      const loader = new CheerioWebBaseLoader(
+        'https://www.beastputty.com/blogs/molding-destiny',
+        {
+          selector: 'article'
         }
-      });
+      );
       
-      if (!response.ok) {
-        this.logger.error(`Failed to fetch blog posts: ${response.status}`);
-        return [];
-      }
+      const docs = await loader.load();
+      const links: Array<{ url: string; text: string; }> = [];
 
-      const text = await response.text();
-      const internal_links: Array<{ title: string; url: string; description: string }> = [];
-      
-      // Import cheerio properly
-      import * as cheerio from 'cheerio';
-      const $ = cheerio.load(text);
-      
-      // Find all blog post links
-      $('article').each((_, article) => {
-        try {
-          const $article = $(article);
+      for (const doc of docs) {
+        const cheerio = doc.metadata.cheerio;
+        if (cheerio) {
+          const $article = cheerio('article');
           const $link = $article.find('a');
           if ($link.length) {
-            const title = $link.text().trim();
+            const text = $link.text().trim();
             const url = `https://www.beastputty.com${$link.attr('href')}`;
-            const excerpt = $article.find('p.excerpt').text().trim() || '';
-            
-            internal_links.push({
-              title,
-              url,
-              description: excerpt
-            });
+            links.push({ url, text });
           }
-        } catch (error) {
-          this.logger.warn(`Error parsing article: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
-      });
+      }
 
-      this.logger.info(`Found ${internal_links.length} internal blog posts`);
-      return internal_links;
-
+      return links;
     } catch (error) {
-      this.logger.error(`Error fetching internal links: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error('Error fetching internal links:', error instanceof Error ? error.message : 'Unknown error');
       return [];
     }
   }
 
-  private async searchAndValidateUrls(query: string): Promise<Array<{ url: string; title: string }>> {
-    try {
-      // Simulate search results for now - in production, integrate with a real search API
-      const searchResults = [
-        { url: 'https://example.com/1', title: 'Example 1' },
-        { url: 'https://example.com/2', title: 'Example 2' },
-        { url: 'https://example.com/3', title: 'Example 3' },
-      ];
+  private async validateLinks(links: Array<{ url: string; text: string; }>): Promise<ValidatedLink[]> {
+    const validatedLinks = await Promise.all(
+      links.map(async (link) => {
+        const isValid = await this.validateUrl(link.url);
+        const isInternal = link.url.includes(this.internalDomain) || link.url.startsWith('/') || link.url.startsWith('#');
+        return {
+          ...link,
+          isValid,
+          isInternal
+        };
+      })
+    );
 
-      const validatedResults = await Promise.all(
-        searchResults.map(async (result) => {
-          const isValid = await this.validateUrl(result.url);
-          return isValid ? result : null;
-        })
-      );
-
-      return validatedResults.filter(Boolean) as Array<{ url: string; title: string }>;
-    } catch (e) {
-      this.logger.error(`Error searching and validating URLs: ${e}`);
-      return [];
-    }
+    return validatedLinks.filter(link => link.isValid);
   }
 
-  async optimizeContent(content: ContentStructure): Promise<ContentStructure> {
+  async generateContent(topic: string, keywords: string[]): Promise<ContentStructure> {
     try {
-      const prompt = `${this.persona}\n\nWrite a blog post with the following details:\n\nTitle: ${content.title}\nKeywords: ${content.metadata.keywords.join(', ')}\nKey Sources:\n${content.sources.map(s => `- ${s.name}`).join('\n')}\n\nProvide:\n1. Engaging, well-structured content\n2. Natural keyword integration\n3. Clear sections with proper HTML tags\n4. Internal linking suggestions\n\nFormat the content with proper HTML tags (<p>, <h2>, etc).`;
+      // First, get relevant internal links
+      const internalLinks = await this.getInternalLinks();
+      const validatedInternalLinks = await this.validateLinks(internalLinks);
 
-      const response = await this.hf.textGeneration({
-        model: this.model,
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 2000,
-          temperature: 0.8
-        }
-      });
-
-      // Extract internal linking suggestions if provided
-      const linkSuggestions = response.generated_text
-        .match(/Links?:([\s\S]+?)(?=\n\n|$)/i)?.[1]
-        .split('\n')
-        .filter(line => line.includes('|'))
-        .map(line => {
-          const [text, path] = line.split('|').map(s => s.trim());
-          const url = path || `#${text.toLowerCase().replace(/\s+/g, '-')}`;
-          return {
-            text: text.replace(/^[-*]\s*/, ''),
-            url,
-            isInternal: url.startsWith('#') || url.startsWith('/')
-          };
-        }) || [];
-
-      // Validate links
-      const validatedLinks = await Promise.all(
-        linkSuggestions.map(async (link) => {
-          const isValid = await this.validateUrl(link.url);
-          return isValid ? link : null;
+      const parser = StructuredOutputParser.fromZodSchema(
+        z.object({
+          title: z.string(),
+          excerpt: z.string().max(160),
+          content: z.string(),
+          keywords: z.array(z.string()),
+          suggestedLinks: z.array(z.object({
+            url: z.string(),
+            text: z.string()
+          }))
         })
       );
 
-      // Validate sources
-      const validatedSources = await Promise.all(
-        content.sources.map(async (source) => {
-          const isValid = await this.validateUrl(source.url);
-          return isValid ? source : { ...source, url: '#' };
-        })
-      );
+      const prompt = new PromptTemplate({
+        template: `{persona}
 
-      // Clean up the content by removing the Links section
-      const cleanContent = response.generated_text.replace(/Links?:[\s\S]+?(?=\n\n|$)/i, '').trim();
+Write a blog post about: {topic}
+Keywords to include: {keywords}
 
-      return {
-        ...content,
-        content: cleanContent,
-        links: validatedLinks.filter(Boolean),
-        sources: validatedSources,
-        metadata: await this.generateSEOMetadata(content.title, cleanContent)
-      };
-    } catch (error) {
-      console.error('Error optimizing content:', error);
-      throw error;
-    }
-  }
+Available internal links to reference:
+{internalLinks}
 
-  private async generateSEOMetadata(title: string, content: string): Promise<SEOMetadata> {
-    try {
-      const prompt = `Generate SEO metadata for:\nTitle: ${title}\n\nContent Preview: ${content.substring(0, 500)}...\n\nProvide:\n- SEO Title (max 60 chars)\n- Meta Description (max 160 chars)\n\nFormat as:\nTitle: [title]\nDescription: [description]`;
-      
-      const response = await this.hf.textGeneration({
-        model: this.model,
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 200,
-          temperature: 0.5
-        }
+The content should:
+1. Be engaging and humorous
+2. Use only basic HTML tags (h1-h6, p, a, b, i)
+3. Include at least 2-3 relevant internal links from the provided list
+4. Be well-structured with clear sections
+
+Provide a JSON object with:
+- title: A catchy title
+- excerpt: A brief summary (max 160 characters)
+- content: The full HTML content using only h1-h6, p, a, b, and i tags
+- keywords: An array of relevant keywords used
+- suggestedLinks: Array of links to include, using the format { url, text }
+
+{format_instructions}`,
+        inputVariables: ['persona', 'topic', 'keywords', 'internalLinks'],
+        partialVariables: {
+          format_instructions: parser.getFormatInstructions(),
+        },
       });
 
-      const aiResponse = response.generated_text;
-      const titleMatch = aiResponse.match(/Title:\s*([^\n]+)/);
-      const descriptionMatch = aiResponse.match(/Description:\s*([^\n]+)/);
+      const input = await prompt.format({
+        persona: this.persona,
+        topic,
+        keywords: keywords.join(', '),
+        internalLinks: validatedInternalLinks.map(link => `- ${link.text} (${link.url})`).join('\n')
+      });
+
+      const response = await this.llm.invoke(input);
+      const parsed = await parser.parse(response.content.toString());
+
+      // Validate suggested links
+      const validatedSuggestedLinks = await this.validateLinks(parsed.suggestedLinks);
+
+      // Replace link placeholders in content with validated links
+      let finalContent = parsed.content;
+      for (const link of validatedSuggestedLinks) {
+        const placeholder = `{{link:${link.text}}}`;
+        const htmlLink = `<a href="${link.url}">${link.text}</a>`;
+        finalContent = finalContent.replace(placeholder, htmlLink);
+      }
 
       return {
-        title: titleMatch ? titleMatch[1].trim().substring(0, 60) : title,
-        description: descriptionMatch ? descriptionMatch[1].trim().substring(0, 160) : '',
-        keywords: content.metadata.keywords
+        title: parsed.title,
+        excerpt: parsed.excerpt,
+        content: finalContent,
+        metadata: {
+          keywords: parsed.keywords
+        },
+        links: validatedSuggestedLinks
       };
     } catch (error) {
-      console.error('Error generating SEO metadata:', error);
-      throw error;
+      console.error('Error generating content:', error instanceof Error ? error.message : 'Unknown error');
+      throw new Error('Failed to generate content');
     }
   }
 }
