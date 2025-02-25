@@ -3,52 +3,19 @@ import { PromptTemplate } from '@langchain/core/prompts';
 import { StructuredOutputParser } from 'langchain/output_parsers';
 import { z } from 'zod';
 import { CheerioWebBaseLoader } from '@langchain/community/document_loaders/web/cheerio';
-
-export interface ContentStructure {
-  title: string;
-  excerpt: string;
-  content: string;
-  metadata: {
-    keywords: string[];
-    rejectionHistory?: Array<{
-      timestamp: Date;
-      feedback?: string;
-      tone?: string;
-      specificIssues?: string[];
-      urgency?: 'low' | 'medium' | 'high';
-    }>;
-  };
-  links: Array<{
-    url: string;
-    text: string;
-    isInternal: boolean;
-  }>;
-  images?: Array<{
-    url: string;
-    alt: string;
-    caption: string;
-  }>;
-  htmlContent?: string;
-  shopifyData?: {
-    id: string;
-    handle: string;
-    publishedAt: Date;
-  };
-}
-
-interface ValidatedLink {
-  url: string;
-  text: string;
-  isValid: boolean;
-  isInternal: boolean;
-}
+import { StorageService } from '../storage/StorageService';
+import { createHash } from 'crypto';
+import type { ContentStructure, ValidatedLink } from '@types';
 
 export class ContentGeneratorService {
   private llm: ChatOpenAI;
   private persona: string = 'Write in a tone that is quirky, witty, very irreverent, and love sharing the benefits of Beast Putty and some total bullshit.';
-  private readonly internalDomain = 'beastputty.com';
+  private readonly internalDomain = 'www.beastputty.com';
 
-  constructor(openAiKey: string) {
+  constructor(
+    openAiKey: string,
+    private storageService: StorageService
+  ) {
     this.llm = new ChatOpenAI({
       modelName: 'gpt-4',
       temperature: 0.8,
@@ -131,6 +98,13 @@ export class ContentGeneratorService {
 
   async generateContent(topic: string, keywords: string[]): Promise<ContentStructure> {
     try {
+      // Check if we have a draft for this topic
+      const topicHash = this.hashContent(topic + keywords.join(','));
+      const existingDraft = await this.storageService.getDraft(topicHash);
+      if (existingDraft) {
+        return existingDraft;
+      }
+
       // First, get relevant internal links
       const internalLinks = await this.getInternalLinks();
       const validatedInternalLinks = await this.validateLinks(internalLinks);
@@ -198,7 +172,7 @@ Provide a JSON object with:
         finalContent = finalContent.replace(placeholder, htmlLink);
       }
 
-      return {
+      const content: ContentStructure = {
         title: parsed.title,
         excerpt: parsed.excerpt,
         content: finalContent,
@@ -207,9 +181,18 @@ Provide a JSON object with:
         },
         links: validatedSuggestedLinks
       };
+
+      // Store as draft
+      await this.storageService.saveDraft(topicHash, content);
+
+      return content;
     } catch (error) {
       console.error('Error generating content:', error instanceof Error ? error.message : 'Unknown error');
       throw new Error('Failed to generate content');
     }
+  }
+
+  private hashContent(content: string): string {
+    return createHash('sha256').update(content).digest('hex');
   }
 }

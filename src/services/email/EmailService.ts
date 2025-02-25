@@ -3,61 +3,44 @@ import { simpleParser, ParsedMail } from 'mailparser';
 import Imap from 'imap';
 import { Box } from 'imap';
 import { EventEmitter } from 'events';
-import { ContentStructure } from '../content/ContentGeneratorService';
 import { ChatOpenAI } from '@langchain/openai';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { StructuredOutputParser } from 'langchain/output_parsers';
 import { z } from 'zod';
+import type { EmailConfig, EmailMessage, EmailCommand } from '@types';
 
-const commandSchema = z.object({
-  type: z.enum(['UPLOAD_TO_SHOPIFY', 'CHANGE_IMAGE', 'UPDATE_CONTENT', 'REJECT']),
-  feedback: z.string().optional(),
-  additionalContext: z.object({
-    tone: z.string().optional(),
-    specificRequests: z.array(z.string()).optional(),
-    urgency: z.enum(['low', 'medium', 'high']).optional(),
-  }).optional(),
-});
-
-// Configuration interfaces
-export interface EmailConfig {
-  host: string;
-  port: number;
-  user: string;
-  pass: string;
-  imapHost?: string;
-  imapPort?: number;
-  openAiKey: string;
-}
-
-export interface EmailMessage {
-  id: string;
-  subject: string;
-  body: string;
-  html?: string;
-  from: string;
-  to: string;
-  timestamp: Date;
-}
-
-export interface EmailCommand {
-  type: 'UPLOAD_TO_SHOPIFY' | 'CHANGE_IMAGE' | 'UPDATE_CONTENT' | 'REJECT';
-  contentId: string;
-  feedback?: string;
-  additionalContext?: {
-    tone?: string;
-    specificRequests?: string[];
-    urgency?: 'low' | 'medium' | 'high';
-  };
-}
+const commandSchema = z.array(
+  z.object({
+    type: z.enum([
+      'UPLOAD_TO_SHOPIFY', 
+      'CHANGE_IMAGE', 
+      'UPDATE_CONTENT', 
+      'REJECT',
+      'LIST_KEYWORDS',
+      'UPDATE_KEYWORDS',
+      'LIST_POSTS',
+      'DELETE_POST',
+      'GENERATE_POSTS'
+    ]),
+    feedback: z.string().optional(),
+    additionalContext: z.object({
+      tone: z.string().optional(),
+      specificRequests: z.array(z.string()).optional(),
+      urgency: z.enum(['low', 'medium', 'high']).optional(),
+      count: z.number().optional(),
+      keywords: z.array(z.string()).optional(),
+      postId: z.string().optional(),
+    }).optional(),
+  })
+).min(1);
 
 export class EmailService extends EventEmitter {
   private transporter: nodemailer.Transporter;
   private imap: Imap;
   private isConnected: boolean = false;
-  private contentMap: Map<string, ContentStructure>;
   private llm: ChatOpenAI;
   private commandParser: StructuredOutputParser<typeof commandSchema>;
+  private readonly defaultFrom = process.env.EMAIL_FROM || 'beastblogger@beastputty.com';
 
   constructor(config: EmailConfig) {
     super();
@@ -82,8 +65,6 @@ export class EmailService extends EventEmitter {
       tls: true,
       tlsOptions: { rejectUnauthorized: true }
     });
-
-    this.contentMap = new Map();
 
     // Initialize LLM
     this.llm = new ChatOpenAI({
@@ -135,42 +116,6 @@ export class EmailService extends EventEmitter {
       this.imap.once('end', () => resolve());
       this.imap.end();
     });
-  }
-
-  async sendContentPreview(content: ContentStructure, toEmail: string): Promise<string> {
-    try {
-      const contentId = `content_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      this.contentMap.set(contentId, content);
-
-      const emailHtml = `
-        <h1>${content.title}</h1>
-        <p><strong>Excerpt:</strong> ${content.excerpt}</p>
-        <hr>
-        ${content.content}
-        <hr>
-        <p>Please review the content above and reply with your feedback. You can:</p>
-        <ul>
-          <li>Approve and publish the content</li>
-          <li>Request changes to the images</li>
-          <li>Request content revisions</li>
-          <li>Reject the content with feedback</li>
-        </ul>
-        <p>Feel free to provide your feedback in natural language - our system will understand your intent.</p>
-      `;
-
-      await this.sendEmail({
-        from: process.env.EMAIL_FROM || 'beastblogger@beastputty.com',
-        to: toEmail,
-        subject: `Content Preview: ${contentId}`,
-        body: `${content.title}\n\n${content.excerpt}\n\n${content.content}\n\nPlease review and reply with your feedback.`,
-        html: emailHtml
-      });
-
-      return contentId;
-    } catch (error) {
-      console.error('Error sending email preview:', error instanceof Error ? error.message : 'Unknown error');
-      throw new Error('Failed to send email preview');
-    }
   }
 
   async sendEmail(message: Omit<EmailMessage, 'id' | 'timestamp'>): Promise<string> {
@@ -265,24 +210,26 @@ export class EmailService extends EventEmitter {
 
   private async handleIncomingEmail(message: EmailMessage): Promise<void> {
     try {
-      // Extract content ID from subject (e.g., "Re: Content Preview: [contentId]")
       const contentId = message.subject.match(/Content Preview: ([a-zA-Z0-9_-]+)/)?.[1];
+      const commands = await this.parseCommand(message.body);
       
-      if (contentId && this.contentMap.has(contentId)) {
-        const command = await this.parseCommand(message.body);
-        if (command) {
-          this.emit('command', { ...command, contentId });
-        }
+      for (const command of commands) {
+        this.emit('command', { 
+          ...command, 
+          contentId,
+          from: message.from
+        });
       }
     } catch (error) {
       console.error('Error handling incoming email:', error instanceof Error ? error.message : 'Unknown error');
+      this.emit('error', error);
     }
   }
 
-  private async parseCommand(body: string): Promise<Omit<EmailCommand, 'contentId'> | null> {
+  private async parseCommand(body: string): Promise<Array<Omit<EmailCommand, 'contentId' | 'from'>>> {
     try {
       const prompt = new PromptTemplate({
-        template: `Analyze the following email response and identify the requested action and any additional context.
+        template: `Analyze the following email response and identify ALL requested actions and their additional context.
 
 Email content:
 {emailBody}
@@ -292,16 +239,16 @@ Common patterns to look for:
 2. Image change requests
 3. Content revision requests
 4. Rejections or feedback
+5. List or manage keywords
+6. List or manage posts
+7. Generate new posts
 
-Also identify:
-- The tone of the request (urgent, casual, formal, etc.)
-- Any specific requirements or details mentioned
-- The overall urgency level
-
-Provide a structured response with:
+For EACH action identified, provide:
 - type: The main action requested
 - feedback: Any feedback or comments provided
 - additionalContext: Additional details about the request
+
+Return an array of commands, even if there's only one.
 
 {format_instructions}`,
         inputVariables: ['emailBody'],
@@ -314,15 +261,28 @@ Provide a structured response with:
       const response = await this.llm.invoke(input);
       const parsed = await this.commandParser.parse(response.content.toString()) as z.infer<typeof commandSchema>;
 
-      // Map the parsed response to our command structure
-      return {
-        type: parsed.type,
-        feedback: parsed.feedback,
-        additionalContext: parsed.additionalContext
-      };
+      return Array.isArray(parsed) ? parsed : [parsed];
     } catch (error) {
-      console.error('Error parsing command with LLM:', error instanceof Error ? error.message : 'Unknown error');
-      return null;
+      console.error('Error parsing commands with LLM:', error instanceof Error ? error.message : 'Unknown error');
+      return [];
     }
+  }
+
+  async sendErrorNotification(title: string, error: unknown, metadata?: Record<string, unknown>): Promise<void> {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorDetails = error instanceof Error ? error.stack : String(error);
+    
+    await this.sendEmail({
+      from: this.defaultFrom,
+      to: process.env.ADMIN_EMAIL || 'jackson@beastputty.com',
+      subject: `Error: ${title}`,
+      body: `An error occurred: ${errorMessage}`,
+      html: `
+        <h2>Error: ${title}</h2>
+        <p><strong>Message:</strong> ${errorMessage}</p>
+        ${metadata ? `<p><strong>Context:</strong> ${JSON.stringify(metadata, null, 2)}</p>` : ''}
+        ${errorDetails ? `<pre>${errorDetails}</pre>` : ''}
+      `
+    });
   }
 } 

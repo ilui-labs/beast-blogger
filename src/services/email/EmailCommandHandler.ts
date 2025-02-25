@@ -1,8 +1,15 @@
-import { ContentStructure, ContentGeneratorService } from '../content/ContentGeneratorService';
-import { EmailCommand, EmailService } from './EmailService';
+import { ContentGeneratorService } from '../content/ContentGeneratorService';
+import { EmailService } from './EmailService';
 import { EmailRevisionService } from './EmailRevisionService';
-import { ImageHandlerService, ImageScenario } from '../image/ImageHandlerService';
+import { ImageHandlerService } from '../image/ImageHandlerService';
 import { ShopifyUploaderService } from '../shopify/ShopifyUploaderService';
+import { StorageService } from '../storage/StorageService';
+import type { 
+  ContentStructure,
+  EmailCommand,
+  StorageCommand,
+  ImageScenario
+} from '@types';
 
 interface ContentUpdateOptions {
   tone?: string;
@@ -18,29 +25,76 @@ interface RejectionDetails {
 }
 
 export class EmailCommandHandler {
-  private readonly adminEmail = process.env.ADMIN_EMAIL || 'jackson@beastputty.com';
+  private contentMap: Map<string, ContentStructure> = new Map();
 
   constructor(
     private emailService: EmailService,
     private revisionService: EmailRevisionService,
     private shopifyUploader: ShopifyUploaderService,
     private imageService: ImageHandlerService,
-    private contentService: ContentGeneratorService
+    private contentService: ContentGeneratorService,
+    private storageService: StorageService
   ) {
-    this.setupCommandListeners();
+    this.setupEventListeners();
+    this.storageService.load().catch(error => 
+      this.handleError('Storage Load Error', error)
+    );
   }
 
-  private setupCommandListeners(): void {
-    this.emailService.on('command', async (command: EmailCommand) => {
+  private setupEventListeners(): void {
+    this.emailService.on('command', async (command: EmailCommand | StorageCommand) => {
       try {
-        await this.handleCommand(command);
+        if ('contentId' in command && command.contentId) {
+          await this.handleCommand(command as EmailCommand);
+        } else {
+          await this.handleStorageCommand(command as StorageCommand);
+        }
       } catch (error) {
         await this.handleError('Command Processing Error', error, { command });
       }
     });
+
+    this.emailService.on('error', async (error: Error) => {
+      await this.handleError('Email Service Error', error);
+    });
+  }
+
+  async sendContentPreview(content: ContentStructure, toEmail: string): Promise<string> {
+    const contentId = `content_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.contentMap.set(contentId, content);
+    
+    const emailHtml = `
+      <h1>${content.title}</h1>
+      <p><strong>Excerpt:</strong> ${content.excerpt}</p>
+      <hr>
+      ${content.content}
+      <hr>
+      <p>Please review the content above and reply with your feedback. You can:</p>
+      <ul>
+        <li>Approve and publish the content</li>
+        <li>Request changes to the images</li>
+        <li>Request content revisions</li>
+        <li>Reject the content with feedback</li>
+      </ul>
+      <p>Feel free to provide your feedback in natural language - our system will understand your intent.</p>
+    `;
+
+    await this.emailService.sendEmail({
+      from: process.env.EMAIL_FROM || 'beastblogger@beastputty.com',
+      to: toEmail,
+      subject: `Content Preview: ${contentId}`,
+      body: `${content.title}\n\n${content.excerpt}\n\n${content.content}\n\nPlease review and reply with your feedback.`,
+      html: emailHtml
+    });
+
+    return contentId;
   }
 
   private async handleCommand(command: EmailCommand): Promise<void> {
+    if (!command.contentId) {
+      throw new Error('Content ID is required for this operation');
+    }
+
     const content = await this.getContentForCommand(command);
     if (!content) {
       await this.handleError(
@@ -112,42 +166,11 @@ export class EmailCommandHandler {
     error: unknown,
     metadata?: Record<string, unknown>
   ): Promise<void> {
-    try {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      
-      const emailHtml = `
-        <h1>⚠️ Beast Blogger Error: ${title}</h1>
-        <h2>Error Details</h2>
-        <p><strong>Message:</strong> ${errorMessage}</p>
-        ${errorStack ? `<h3>Stack Trace</h3><pre>${errorStack}</pre>` : ''}
-        ${metadata ? `
-          <h3>Additional Context</h3>
-          <pre>${JSON.stringify(metadata, null, 2)}</pre>
-        ` : ''}
-        <hr>
-        <p>Timestamp: ${new Date().toISOString()}</p>
-      `;
-
-      await this.emailService.sendEmail({
-        from: process.env.EMAIL_FROM || 'beastblogger@beastputty.com',
-        to: this.adminEmail,
-        subject: `🚨 Beast Blogger Error: ${title}`,
-        body: `Error: ${errorMessage}\n\nMetadata: ${JSON.stringify(metadata, null, 2)}`,
-        html: emailHtml
-      });
-
-      console.error(`Error notification sent to ${this.adminEmail}:`, {
-        title,
-        error: errorMessage,
-        metadata
-      });
-    } catch (sendError) {
-      // If we can't send the error email, at least log it
-      console.error('Failed to send error notification:', sendError);
-      console.error('Original error:', error);
-      console.error('Error metadata:', metadata);
-    }
+    console.error(`${title}:`, {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      metadata
+    });
+    await this.emailService.sendErrorNotification(title, error, metadata);
   }
 
   private async getContentForCommand(command: EmailCommand): Promise<ContentStructure | null> {
@@ -275,6 +298,38 @@ export class EmailCommandHandler {
     } catch (error) {
       console.error('Error handling rejection:', error instanceof Error ? error.message : 'Unknown error');
       throw error;
+    }
+  }
+
+  private async handleStorageCommand(command: StorageCommand): Promise<void> {
+    let keywords: string[];
+    
+    switch (command.type) {
+    case 'LIST_KEYWORDS':
+      keywords = this.storageService.getKeywords();
+      await this.emailService.sendEmail({
+        from: process.env.EMAIL_FROM || 'beastblogger@beastputty.com',
+        to: command.from,
+        subject: 'Current Keywords List',
+        body: `Current keywords:\n\n${keywords.join('\n')}`
+      });
+      break;
+    case 'UPDATE_KEYWORDS':
+      if (command.additionalContext?.keywords) {
+        await this.storageService.updateKeywords(command.additionalContext.keywords);
+      }
+      break;
+    case 'LIST_POSTS':
+      // Handle listing posts
+      break;
+    case 'DELETE_POST':
+      if (command.additionalContext?.postId) {
+        await this.storageService.deletePost(command.additionalContext.postId);
+      }
+      break;
+    case 'GENERATE_POSTS':
+      // Handle post generation
+      break;
     }
   }
 } 

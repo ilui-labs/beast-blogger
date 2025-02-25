@@ -45,6 +45,7 @@
     "ai": "^4.1.9",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.7",
+    "google-ads-api": "^17.1.0-rest-beta",
     "googleapis": "^144.0.0",
     "graphql-request": "^7.1.2",
     "imap": "^0.8.19",

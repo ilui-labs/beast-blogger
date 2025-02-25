@@ -1,18 +1,5 @@
-import { ContentStructure } from '../content/ContentGeneratorService';
-import { EmailCommand } from './EmailService';
-
-export interface RevisionRequest {
-  id: string;
-  content: ContentStructure;
-  command: EmailCommand;
-  timestamp: Date;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  metadata?: {
-    processingTime?: number;
-    errorDetails?: string;
-    commandContext?: EmailCommand['additionalContext'];
-  };
-}
+import type { ContentStructure } from '@types';
+import type { EmailCommand, RevisionRequest } from '@types';
 
 export class EmailRevisionService {
   private revisions: Map<string, RevisionRequest[]>;

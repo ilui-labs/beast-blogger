@@ -1,0 +1,14 @@
+{
+  // Automatically save files after a delay (in milliseconds)
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+
+  // Format and fix files on save. This example uses ESLint.
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+
+  // (Optional) Ensure the ESLint extension shows its status in the status bar.
+  "eslint.alwaysShowStatus": true
+} 

@@ -3,55 +3,18 @@ import { PromptTemplate } from '@langchain/core/prompts';
 import { StructuredOutputParser } from 'langchain/output_parsers';
 import { z } from 'zod';
 import OpenAI from 'openai';
-
-export interface ContentStructure {
-  title: string;
-  excerpt: string;
-  content: string;
-  metadata: {
-    title: string;
-    description: string;
-    keywords: string[];
-  };
-  sources: Array<{
-    url: string;
-    name: string;
-    citation: string;
-  }>;
-  links: Array<{
-    url: string;
-    text: string;
-    isInternal: boolean;
-  }>;
-  images?: Array<{
-    url: string;
-    alt: string;
-    caption: string;
-  }>;
-  htmlContent?: string;
-}
-
-export interface ImageScenario {
-  description: string;
-  prompt: string;
-  relevantKeywords: string[];
-  absurdityLevel: number; // 1-10 scale
-  beastPuttyConnection: string;
-}
-
-export interface GeneratedImage {
-  url: string;
-  alt: string;
-  caption: string;
-  scenario: ImageScenario;
-}
+import { StorageService } from '../storage/StorageService';
+import { ContentStructure, ImageScenario, GeneratedImage } from '@types';
 
 export class ImageHandlerService {
   private llm: ChatOpenAI;
   private openai: OpenAI;
   private persona: string = 'You are a creative director who loves absurd humor and finding ways to connect Beast Putty to everyday situations in the most ridiculous ways possible.';
 
-  constructor(openAiKey: string) {
+  constructor(
+    openAiKey: string,
+    private storageService: StorageService
+  ) {
     this.llm = new ChatOpenAI({
       modelName: 'gpt-4',
       temperature: 0.9,
@@ -142,8 +105,12 @@ Style: Digital art style, vibrant colors, neon colors, high detail, surreal`;
         throw new Error('No image URL in response');
       }
 
+      // Store the generated image
+      const imageId = `img_${Date.now()}_${Math.random().toString(36).substring(2)}`;
+      await this.storageService.saveGeneratedImage(imageId, imageUrl, scenario);
+
       return {
-        url: imageUrl,
+        url: await this.storageService.getGeneratedImage(imageId).then(img => img!.url),
         alt: scenario.description,
         caption: `${scenario.description} - ${scenario.beastPuttyConnection}`,
         scenario
