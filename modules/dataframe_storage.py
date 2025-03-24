@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Union
 import pandas as pd
 from pathlib import Path
+from io import StringIO
 
 class DataFrameStorage:
     def __init__(self, data_dir: str = "data"):
@@ -22,7 +23,8 @@ class DataFrameStorage:
                 with open(self.db_file, 'r') as f:
                     stored_data = json.load(f)
                     for df_id, df_info in stored_data.items():
-                        df_data = pd.read_json(df_info['data'])
+                        # Use StringIO for JSON reading
+                        df_data = pd.read_json(StringIO(df_info['data']))
                         df_info['data'] = df_data
                         self.dataframes[df_id] = df_info
         except Exception as e:
@@ -87,11 +89,28 @@ class DataFrameStorage:
         
         self._save_to_disk()
 
+    def get_dataframe_info(self, df_id: str) -> Optional[Dict]:
+        """Get DataFrame info by ID"""
+        try:
+            if df_id not in self.dataframes:
+                return None
+            return self.dataframes[df_id]
+        except Exception as e:
+            print(f"Error getting DataFrame info for {df_id}: {str(e)}")
+            return None
+
     def get_dataframe(self, df_id: str) -> pd.DataFrame:
-        """Retrieve a DataFrame by its ID."""
-        if df_id not in self.dataframes:
-            raise KeyError(f"DataFrame with id {df_id} not found")
-        return self.dataframes[df_id]['data']
+        """Retrieve a DataFrame by ID"""
+        try:
+            df_info = self.get_dataframe_info(df_id)
+            if not df_info:
+                return pd.DataFrame()
+            
+            # Return the DataFrame directly since it's already loaded
+            return df_info['data']
+        except Exception as e:
+            print(f"Error retrieving DataFrame {df_id}: {str(e)}")
+            return pd.DataFrame()
 
     def get_version_history(self, df_id: str) -> List[Dict]:
         """Get version history for a DataFrame."""

@@ -81,6 +81,75 @@ class BlogAutomationApp:
         except Exception as e:
             st.error(f"Error deleting keyword: {str(e)}")
 
+    def save_generated_post(self, post: Dict):
+        """Save a generated post to the database"""
+        try:
+            # Create a DataFrame with the post data
+            post_data = {
+                "Selected": False,
+                "Keyword": post["keyword"],
+                "Title": post["title"],
+                "Excerpt": post["excerpt"],
+                "Content": post["content"],
+                "Image": post.get("image"),
+                "Intent": post.get("intent", ""),
+                "Volume": post.get("volume", 0),
+                "Frequent Word": post.get("frequent_word", ""),
+                "Tab": post.get("tab", ""),
+                "Status": "pending",
+                "Generated Date": datetime.now().isoformat()
+            }
+            
+            df = pd.DataFrame([post_data])
+            
+            # Query for existing posts DataFrame
+            posts_dfs = self.df_storage.query_by_metadata({"type": "generated_posts"})
+            
+            if posts_dfs:
+                # Get the most recent DataFrame
+                latest_df_id = posts_dfs[-1]
+                existing_df = self.df_storage.get_dataframe(latest_df_id)
+                
+                # Append new post
+                combined_df = pd.concat([existing_df, df]).reset_index(drop=True)
+                
+                # Update existing DataFrame
+                self.df_storage.update_dataframe(
+                    latest_df_id,
+                    combined_df,
+                    "Added new generated post"
+                )
+            else:
+                # Create new DataFrame
+                df_id = self.df_storage.add_dataframe(
+                    df=df,
+                    source="generated_posts",
+                    metadata={
+                        "type": "generated_posts",
+                        "date": datetime.now().isoformat()
+                    }
+                )
+                
+            return True
+        except Exception as e:
+            st.error(f"Error saving generated post: {str(e)}")
+            return False
+
+    def load_saved_posts(self):
+        """Load saved posts from storage"""
+        try:
+            # Query for posts dataframes
+            posts_dfs = self.df_storage.query_by_metadata({"type": "generated_posts"})
+            if posts_dfs:
+                # Get the most recent DataFrame
+                latest_df_id = posts_dfs[-1]
+                df = self.df_storage.get_dataframe(latest_df_id)
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading saved posts: {str(e)}")
+            return pd.DataFrame()
+
     def process_lowfruits_file(self, uploaded_file) -> List[Dict]:
         """Process a single lowfruits.io Excel or CSV file."""
         try:
@@ -121,9 +190,11 @@ class BlogAutomationApp:
             st.session_state.generated_posts = []
         if 'editor_key' not in st.session_state:
             st.session_state.editor_key = 0
+        if 'saved_posts_df' not in st.session_state:
+            st.session_state.saved_posts_df = self.load_saved_posts()
 
         # Create main tabs
-        main_tab1, main_tab2 = st.tabs(["Blog Post Generation", "Settings"])
+        main_tab1, main_tab2, main_tab3 = st.tabs(["Blog Post Generation", "Saved Posts", "Settings"])
 
         with main_tab1:
             # Input fields
@@ -273,6 +344,9 @@ class BlogAutomationApp:
                                         post = self.content_generator.generate_post(row['query'], dict(row))
                                         
                                         if post:
+                                            # Initialize image as None
+                                            post['image'] = None
+                                            
                                             try:
                                                 with st.spinner("Generating image..."):
                                                     image_prompt = self.image_handler.generate_image_prompt(
@@ -282,38 +356,80 @@ class BlogAutomationApp:
                                                     )
                                                     
                                                     if not image_prompt:
-                                                        st.warning("⚠️ Failed to generate image prompt, using placeholder image")
-                                                        post['image'] = "https://placehold.co/1920x1080/CCCCCC/000000.png?text=Image+Generation+Failed"
+                                                        st.warning("⚠️ Failed to generate image prompt, continuing without image")
                                                     else:
                                                         st.info(f"ℹ️ Generated prompt: {image_prompt}")
                                                         
                                                         image_url = self.image_handler.fetch_image(image_prompt)
                                                         if not image_url or image_url.startswith("Error:"):
-                                                            st.warning(f"⚠️ Image generation failed: {image_url}")
-                                                            post['image'] = "https://placehold.co/1920x1080/CCCCCC/000000.png?text=Image+Generation+Failed"
+                                                            st.warning(f"⚠️ Image generation failed: {image_url}, continuing without image")
                                                         else:
                                                             post['image'] = image_url
                                                             st.success("✅ Image generated successfully")
                                             except Exception as img_error:
-                                                st.warning(f"⚠️ Image generation error: {str(img_error)}")
-                                                post['image'] = "https://placehold.co/1920x1080/CCCCCC/000000.png?text=Image+Generation+Failed"
-                                                st.info("ℹ️ Using placeholder image - post will still be created")
-
-                                            # Add to session state
-                                            st.session_state.generated_posts.append(post)
+                                                st.warning(f"⚠️ Image generation error: {str(img_error)}, continuing without image")
                                             
-                                            # Show post in UI with improved layout
-                                            with posts_container:
-                                                post_col1, post_col2 = st.columns([4, 1])
-                                                with post_col1:
-                                                    st.success(f"✅ Generated: {post['title']}")
-                                                    with st.expander("Preview"):
-                                                        st.write(post['excerpt'])
-                                                with post_col2:
-                                                    if st.button("📤 Upload Now", key=f"upload_{len(st.session_state.generated_posts)}", type="primary"):
-                                                        with st.spinner("📡 Uploading to Shopify..."):
-                                                            result = asyncio.run(self.shopify_uploader.upload_post(post))
-                                                            st.success(f"✨ {result}")
+                                            # Save post to database
+                                            if self.save_generated_post(post):
+                                                # Refresh saved posts immediately
+                                                st.session_state.saved_posts_df = self.load_saved_posts()
+                                                
+                                                # Add to session state
+                                                st.session_state.generated_posts.append(post)
+                                                
+                                                # Show post in UI with improved layout
+                                                with posts_container:
+                                                    post_col1, post_col2 = st.columns([4, 1])
+                                                    with post_col1:
+                                                        st.success(f"✅ Generated: {post['title']}")
+                                                        with st.expander("Preview"):
+                                                            st.write(post['excerpt'])
+                                                    with post_col2:
+                                                        button_key = f"upload_{len(st.session_state.generated_posts)}"
+                                                        
+                                                        # Initialize upload status in session state if not exists
+                                                        if f"upload_status_{button_key}" not in st.session_state:
+                                                            st.session_state[f"upload_status_{button_key}"] = None
+                                                        
+                                                        # Show upload button and status
+                                                        if st.button("📤 Upload Now", key=button_key, type="primary"):
+                                                            try:
+                                                                with st.spinner("📡 Uploading to Shopify..."):
+                                                                    result = asyncio.run(self.shopify_uploader.upload_post(post))
+                                                                    st.session_state[f"upload_status_{button_key}"] = {
+                                                                        "success": True,
+                                                                        "message": f"✨ {result}"
+                                                                    }
+                                                                    
+                                                                    # Update status in saved posts
+                                                                    mask = st.session_state.saved_posts_df["Title"] == post["title"]
+                                                                    st.session_state.saved_posts_df.loc[mask, "Status"] = "uploaded"
+                                                                    
+                                                                    # Save updated status
+                                                                    self.df_storage.update_dataframe(
+                                                                        self.df_storage.query_by_metadata({"type": "generated_posts"})[-1],
+                                                                        st.session_state.saved_posts_df,
+                                                                        "Updated post status after upload"
+                                                                    )
+                                                            except Exception as upload_error:
+                                                                st.session_state[f"upload_status_{button_key}"] = {
+                                                                    "success": False,
+                                                                    "message": f"❌ Upload failed: {str(upload_error)}"
+                                                                }
+                                                                # Update status in saved posts
+                                                                mask = st.session_state.saved_posts_df["Title"] == post["title"]
+                                                                st.session_state.saved_posts_df.loc[mask, "Status"] = f"failed: {str(upload_error)}"
+                                                        
+                                                        # Display upload status if available
+                                                        if st.session_state[f"upload_status_{button_key}"]:
+                                                            status = st.session_state[f"upload_status_{button_key}"]
+                                                            if status["success"]:
+                                                                st.success(status["message"])
+                                                            else:
+                                                                st.error(status["message"])
+                                                
+                                                # Force UI refresh
+                                                st.experimental_rerun()
 
                                         else:
                                             st.error(f"❌ Failed to generate post for: {row['query']}")
@@ -328,10 +444,94 @@ class BlogAutomationApp:
 
                                 status_text.text("🎉 Processing complete!")
                                 progress_bar.progress(1.0)
+                                
+                                # Refresh saved posts
+                                st.session_state.saved_posts_df = self.load_saved_posts()
                         except Exception as e:
                             st.error(f"⚠️ Error in post generation process: {str(e)}")
 
         with main_tab2:
+            st.header("Saved Posts")
+            
+            if not st.session_state.saved_posts_df.empty:
+                # Create column configuration
+                column_config = {
+                    "Selected": st.column_config.CheckboxColumn(
+                        "Select",
+                        help="Select posts to upload",
+                        default=False,
+                    ),
+                    "Title": st.column_config.TextColumn(
+                        "Title",
+                        width="large",
+                    ),
+                    "Status": st.column_config.TextColumn(
+                        "Status",
+                        width="small",
+                    ),
+                    "Generated Date": st.column_config.DatetimeColumn(
+                        "Generated Date",
+                        format="YYYY-MM-DD HH:mm",
+                    )
+                }
+                
+                # Show editable dataframe
+                edited_df = st.data_editor(
+                    st.session_state.saved_posts_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config=column_config,
+                    disabled=["Keyword", "Title", "Excerpt", "Content", "Image", "Intent", "Volume", "Frequent Word", "Tab", "Generated Date"],
+                    key="saved_posts_editor"
+                )
+                
+                # Handle selection changes
+                if not edited_df.equals(st.session_state.saved_posts_df):
+                    st.session_state.saved_posts_df = edited_df
+                    self.df_storage.update_dataframe(
+                        self.df_storage.query_by_metadata({"type": "generated_posts"})[-1],
+                        edited_df,
+                        "Updated post selection"
+                    )
+                
+                # Upload button for selected posts
+                if st.button("📤 Upload Selected Posts", type="primary"):
+                    selected_posts = st.session_state.saved_posts_df[st.session_state.saved_posts_df['Selected']]
+                    if len(selected_posts) == 0:
+                        st.warning("⚠️ Please select at least one post to upload")
+                    else:
+                        for _, post in selected_posts.iterrows():
+                            try:
+                                with st.spinner(f"📡 Uploading: {post['Title']}"):
+                                    post_dict = {
+                                        "keyword": post["Keyword"],
+                                        "title": post["Title"],
+                                        "excerpt": post["Excerpt"],
+                                        "content": post["Content"],
+                                        "image": post["Image"]
+                                    }
+                                    result = asyncio.run(self.shopify_uploader.upload_post(post_dict))
+                                    st.success(f"✨ {result}")
+                                    
+                                    # Update status in DataFrame
+                                    mask = st.session_state.saved_posts_df["Title"] == post["Title"]
+                                    st.session_state.saved_posts_df.loc[mask, "Status"] = "uploaded"
+                            except Exception as e:
+                                st.error(f"❌ Failed to upload {post['Title']}: {str(e)}")
+                                # Update status in DataFrame
+                                mask = st.session_state.saved_posts_df["Title"] == post["Title"]
+                                st.session_state.saved_posts_df.loc[mask, "Status"] = f"failed: {str(e)}"
+                        
+                        # Save updated status
+                        self.df_storage.update_dataframe(
+                            self.df_storage.query_by_metadata({"type": "generated_posts"})[-1],
+                            st.session_state.saved_posts_df,
+                            "Updated post status after upload"
+                        )
+            else:
+                st.info("No saved posts found. Generate some posts in the Blog Post Generation tab!")
+
+        with main_tab3:
             st.header("Settings")
             # Add any global settings here
 

@@ -49,8 +49,11 @@ class ShopifyUploader:
             if image_url and isinstance(image_url, str) and image_url.startswith('http'):
                 article_data["image"] = {
                     "altText": title,
-                    "src": image_url
+                    "originalSource": image_url
                 }
+            else:
+                # Log that no valid image was provided but continue with upload
+                print(f"No valid image provided for post: {title}, continuing without image")
 
             variables = {
                 "article": article_data
@@ -83,14 +86,27 @@ class ShopifyUploader:
             response = shopify.GraphQL().execute(mutation, variables)
             response = json.loads(response)
             
+            # Check if the response has the expected structure
+            if not isinstance(response, dict):
+                raise Exception(f"Unexpected response format: {response}")
+            
+            if 'data' not in response:
+                raise Exception(f"Response missing 'data' field: {response}")
+            
+            if 'articleCreate' not in response['data']:
+                raise Exception(f"Response missing 'articleCreate' field: {response}")
+            
             # Check for user errors in the response
-            user_errors = response['data']['articleCreate']['userErrors']
+            user_errors = response['data']['articleCreate'].get('userErrors', [])
             if user_errors:
-                error_messages = ', '.join([f"{error['field']}: {error['message']}" for error in user_errors])
+                error_messages = ', '.join([f"{error.get('field', 'unknown')}: {error.get('message', 'Unknown error')}" for error in user_errors])
                 raise Exception(f"User errors occurred: {error_messages}")
             
-            article = response['data']['articleCreate']['article']
-            print(f"Post uploaded successfully: {article['title']} - {article['summary']}")
+            article = response['data']['articleCreate'].get('article')
+            if not article:
+                raise Exception("No article data in response")
+            
+            print(f"Post uploaded successfully: {article.get('title', 'Unknown Title')}")
             return article
             
         except Exception as e:
